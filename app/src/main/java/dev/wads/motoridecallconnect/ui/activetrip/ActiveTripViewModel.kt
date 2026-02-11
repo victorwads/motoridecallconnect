@@ -137,18 +137,7 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
     }
 
     fun onTripStatusChanged(isActive: Boolean, tripId: String? = null) {
-        val state = _uiState.value
-        if (isActive) {
-            if (!state.isTripActive) {
-                // If we receive a trip start from a peer, THEY are the host
-                val hostId = state.connectedPeer?.id
-                startTrip(tripId, hostId)
-            }
-        } else {
-            if (state.isTripActive) {
-                endTrip()
-            }
-        }
+        Log.i(TAG, "Ignoring remote trip status update. active=$isActive, tripId=$tripId")
     }
 
     fun updateTranscript(newTranscript: String, isFinal: Boolean) {

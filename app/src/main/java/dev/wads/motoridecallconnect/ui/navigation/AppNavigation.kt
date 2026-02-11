@@ -56,7 +56,6 @@ fun AppNavigation(
     socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
     pairingViewModel: PairingViewModel,
     settingsViewModel: SettingsViewModel,
-    onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onConnectToDevice: (Device) -> Unit,
     onDisconnectClick: () -> Unit = {}
@@ -152,15 +151,7 @@ fun AppNavigation(
                 ActiveTripScreen(
                     uiState = uiState,
                     isHost = isHosting,
-                    onStartTripClick = onStartTripClick,
                     onEndTripClick = onEndTripClick,
-                    onStartDiscoveryClick = {
-                        navController.navigate("pairing")
-                    },
-                    onConnectToService = { serviceInfo ->
-                        val device = Device.fromNsdServiceInfo(serviceInfo)
-                        onConnectToDevice(device)
-                    },
                     onDisconnectClick = onDisconnectClick
                 )
             }

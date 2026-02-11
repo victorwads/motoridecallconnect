@@ -1,6 +1,5 @@
 package dev.wads.motoridecallconnect.ui.activetrip
 
-import android.net.nsd.NsdServiceInfo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,12 +20,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,10 +46,7 @@ import dev.wads.motoridecallconnect.ui.components.UserProfileView
 fun ActiveTripScreen(
     uiState: ActiveTripUiState,
     isHost: Boolean,
-    onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
-    onStartDiscoveryClick: () -> Unit,
-    onConnectToService: (NsdServiceInfo) -> Unit = {},
     onDisconnectClick: () -> Unit = {}
 ) {
     val badgeStatus = when (uiState.connectionStatus) {
@@ -156,92 +148,40 @@ fun ActiveTripScreen(
 
             if (badgeStatus == BadgeStatus.Disconnected) {
                 Spacer(modifier = Modifier.height(12.dp))
-                BigButton(
-                    text = stringResource(R.string.pair_now),
-                    onClick = onStartDiscoveryClick,
-                    variant = ButtonVariant.Outline,
-                    fullWidth = true
+                Text(
+                    text = "Conexão e pareamento são controlados apenas pela aba Pairing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                
-                // Show list only if disconnected
-                if (uiState.discoveredServices.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = stringResource(R.string.discovered_devices_header),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    uiState.discoveredServices.forEach { service ->
-                        Button(
-                            onClick = { onConnectToService(service) },
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                        ) {
-                            Text(stringResource(R.string.connect_to_device_format, service.serviceName))
-                        }
-                    }
-                }
             }
         }
 
         // --- Trip Controls ---
-        val canStartTrip = uiState.connectionStatus != ConnectionStatus.CONNECTED || isHost
-        
-        if (canStartTrip || uiState.isTripActive) {
-            StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
-                if (uiState.isTripActive) {
-                     Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                     ) {
-                        uiState.tripStartTime?.let {
-                            ChronometerView(startTimeMillis = it)
-                            Spacer(modifier = Modifier.height(16.dp))
-                        }
-                        BigButton(
-                            text = stringResource(R.string.end_trip_action),
-                            onClick = onEndTripClick,
-                            variant = ButtonVariant.Destructive,
-                            icon = Icons.Default.Stop,
-                            size = ButtonSize.Xl,
-                            fullWidth = true
-                        )
-                     }
-                } else {
-                     BigButton(
-                        text = stringResource(R.string.start_trip_action),
-                        onClick = onStartTripClick,
-                        variant = ButtonVariant.Success,
-                        icon = Icons.Default.PlayArrow,
+        StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
+            if (uiState.isTripActive) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    uiState.tripStartTime?.let {
+                        ChronometerView(startTimeMillis = it)
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+                    BigButton(
+                        text = stringResource(R.string.end_trip_action),
+                        onClick = onEndTripClick,
+                        variant = ButtonVariant.Destructive,
+                        icon = Icons.Default.Stop,
                         size = ButtonSize.Xl,
                         fullWidth = true
-                     )
-                }
-            }
-        } else if (uiState.connectionStatus == ConnectionStatus.CONNECTED && !isHost) {
-            StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
-                if (uiState.isTripActive) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        uiState.tripStartTime?.let {
-                            ChronometerView(startTimeMillis = it)
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                        Text(
-                            text = "Trip ativa (Sincronizado com Host)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                } else {
-                    Text(
-                        text = "Aguardando o host iniciar a trip...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            } else {
+                Text(
+                    text = "Trip inativa. O início da trip não é feito por este botão.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -283,9 +223,7 @@ private fun ActiveTripScreenPreview() {
                     transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
                 ),
                 isHost = true,
-                onStartTripClick = {},
-                onEndTripClick = {},
-                onStartDiscoveryClick = {}
+                onEndTripClick = {}
             )
         }
     }

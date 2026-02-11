@@ -134,16 +134,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     socialViewModel = socialViewModel,
                     pairingViewModel = pairingViewModel,
                     settingsViewModel = settingsViewModel,
-                    onStartTripClick = { 
-                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                            startAndBindAudioService()
-                        } else {
-                            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                        activeTripViewModel.startTrip()
-                    },
                     onEndTripClick = { 
-                        stopAndUnbindAudioService()
                         activeTripViewModel.endTrip()
                     },
                     onConnectToDevice = { device ->

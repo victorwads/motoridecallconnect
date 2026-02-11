@@ -43,7 +43,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     private val downsampleFactor = CAPTURE_SAMPLE_RATE_HZ / WHISPER_SAMPLE_RATE_HZ
 
     init {
-        checkAndInitWhisper()
+        Log.i(TAG, "SpeechRecognizerHelper ready. Whisper initialization is lazy and starts only during trip.")
     }
 
     private fun checkAndInitWhisper() {
@@ -72,6 +72,9 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     }
 
     private fun setupSystemRecognizer() {
+        if (speechRecognizer != null) {
+            return
+        }
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
             speechRecognizer?.setRecognitionListener(createRecognitionListener())
@@ -117,7 +120,6 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
             Log.i(TAG, "Model download finished.")
             withContext(Dispatchers.Main) {
                 listener.onModelDownloadFinished(true)
-                checkAndInitWhisper() // Retry initialization after download
             }
         } catch (e: Exception) {
             Log.e(TAG, "Model download failed", e)
@@ -129,11 +131,16 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     }
 
     fun startListening() {
+        if (!isUsingWhisper && modelFile.exists()) {
+            checkAndInitWhisper()
+        }
+
         if (isUsingWhisper) {
              Log.i(TAG, "Using Whisper mode. Waiting for PCM chunks from AudioService.")
              return
         }
         Log.i(TAG, "Using Android system SpeechRecognizer mode.")
+        setupSystemRecognizer()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -144,7 +151,11 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     }
 
     fun stopListening() {
-        if (!isUsingWhisper) {
+        if (isUsingWhisper) {
+            whisperLib.free()
+            isUsingWhisper = false
+            Log.i(TAG, "Whisper context released (trip ended).")
+        } else {
             speechRecognizer?.stopListening()
         }
         Log.d(TAG, "Stopped listening.")

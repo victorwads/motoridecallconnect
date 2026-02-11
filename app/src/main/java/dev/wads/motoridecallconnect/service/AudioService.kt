@@ -131,16 +131,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val notification = createNotification()
         startForeground(1, notification)
         audioCapturer.startCapture()
-        
-        lifecycleScope.launch {
-            speechRecognizerHelper.downloadModelIfNeeded()
-        }
-
-        speechRecognizerHelper.startListening()
         signalingClient.startServer(8080) 
         Log.i(
             TAG,
-            "Service started. Mode=$currentMode, TripActive=$isTripActive, Whisper=${speechRecognizerHelper.isUsingWhisper}"
+            "Service started. Mode=$currentMode, TripActive=$isTripActive, Whisper=${speechRecognizerHelper.isUsingWhisper}. " +
+                "Whisper will start only when trip becomes active."
         )
         return START_STICKY
     }
@@ -197,17 +192,21 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         if (tripChanged && wasTripActive && !tripActive) {
             flushTranscriptionBuffer(force = true, reason = "trip_end")
+            speechRecognizerHelper.stopListening()
         }
         if (tripChanged && tripActive) {
             resetTranscriptionState(clearAudio = true)
+            lifecycleScope.launch {
+                speechRecognizerHelper.downloadModelIfNeeded()
+                if (isTripActive) {
+                    speechRecognizerHelper.startListening()
+                }
+            }
         }
 
         if (tripChanged) {
-            val msg = if (isTripActive) "TRIP:START${if (tripId != null) ":$tripId" else ""}" else "TRIP:STOP"
-            signalingClient.sendMessage(msg)
             Log.i(TAG, "Trip status changed locally. isTripActive=$isTripActive, tripId=$tripId")
         }
-
         Log.d(TAG, "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
         
         if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
@@ -292,9 +291,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onTripStatusReceived(active: Boolean, tripId: String?) {
-        Log.d(TAG, "Trip status received: $active, id=$tripId")
-        isTripActive = active
-        callback?.onTripStatusChanged(active, tripId)
+        Log.i(TAG, "Ignoring remote trip status (decoupled from connection). active=$active, id=$tripId")
     }
 
     // --- AudioCapturerListener Callbacks ---
