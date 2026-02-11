@@ -3,6 +3,7 @@ package dev.wads.motoridecallconnect.ui.components
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -93,4 +94,20 @@ private fun ButtonContent(icon: ImageVector?, text: String, fontSize: TextUnit) 
         Spacer(modifier = Modifier.width(12.dp))
     }
     Text(text = text, fontSize = fontSize)
+}
+
+@androidx.compose.ui.tooling.preview.Preview
+@Composable
+private fun BigButtonPreview() {
+    dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
+        androidx.compose.foundation.layout.Column(Modifier.padding(16.dp)) {
+            BigButton(text = "Primary", onClick = {})
+            Spacer(modifier = Modifier.height(8.dp))
+            BigButton(text = "Secondary", onClick = {}, variant = ButtonVariant.Secondary)
+            Spacer(modifier = Modifier.height(8.dp))
+            BigButton(text = "Destructive", onClick = {}, variant = ButtonVariant.Destructive)
+            Spacer(modifier = Modifier.height(8.dp))
+            BigButton(text = "Outline", onClick = {}, variant = ButtonVariant.Outline)
+        }
+    }
 }

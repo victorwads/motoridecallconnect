@@ -12,7 +12,20 @@
           "package_name": "dev.wads.motoridecallconnect"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1062560546506-nhbfirnundm1v8oe5utq2tk94j0cd2qr.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "dev.wads.motoridecallconnect",
+            "certificate_hash": "c3a0520e11d0a220342d99333e9a058c8e027190"
+          }
+        },
+        {
+          "client_id": "1062560546506-rvdk8pgng5scifkrcl7iuoc8bg8sig0f.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDSkl4DFQbfy1NhwbpXHf_WdxlRNjCk5jE"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1062560546506-rvdk8pgng5scifkrcl7iuoc8bg8sig0f.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

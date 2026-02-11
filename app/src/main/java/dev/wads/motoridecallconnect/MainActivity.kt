@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
 
     private val activeTripViewModel by viewModels<dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel> { viewModelFactory }
     private val tripHistoryViewModel by viewModels<dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel> { viewModelFactory }
+    private val loginViewModel by viewModels<dev.wads.motoridecallconnect.ui.login.LoginViewModel> { viewModelFactory }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -78,6 +79,7 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
                 AppNavigation(
                     activeTripViewModel = activeTripViewModel,
                     tripHistoryViewModel = tripHistoryViewModel,
+                    loginViewModel = loginViewModel,
                     onStartTripClick = { requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                     onEndTripClick = { stopAndUnbindAudioService() },
                     onStartDiscoveryClick = { nsdHelper.discoverServices() }

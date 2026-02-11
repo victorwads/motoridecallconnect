@@ -217,3 +217,26 @@ fun ActiveTripScreen(
         Spacer(modifier = Modifier.height(30.dp))
     }
 }
+
+@androidx.compose.ui.tooling.preview.Preview
+@Composable
+private fun ActiveTripScreenPreview() {
+    dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
+        androidx.compose.material3.Surface {
+            ActiveTripScreen(
+                uiState = ActiveTripUiState(
+                    connectionStatus = "Conectado",
+                    discoveredServices = emptyList(),
+                    transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
+                ),
+                onStartTripClick = {},
+                onEndTripClick = {},
+                onStartDiscoveryClick = {},
+                onModeChange = {},
+                onStartCommandChange = {},
+                onStopCommandChange = {},
+                onRecordingToggle = {}
+            )
+        }
+    }
+}

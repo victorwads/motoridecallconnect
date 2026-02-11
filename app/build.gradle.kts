@@ -49,6 +49,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.preference)
+    implementation(libs.androidx.datastore.preferences)
 
     implementation(libs.webrtc)
 
@@ -57,6 +58,7 @@ dependencies {
     implementation(libs.firebase.analytics)
     implementation(libs.firebase.firestore)
     implementation(libs.firebase.auth)
+    implementation(libs.play.services.auth)
 
     // Jetpack Compose
     implementation(platform(libs.androidx.compose.bom))

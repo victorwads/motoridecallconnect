@@ -207,3 +207,34 @@ private fun formatDuration(durationMillis: Long?): String {
     }
     return String.format("%02dm %02ds", minutes, seconds % 60)
 }
+
+@androidx.compose.ui.tooling.preview.Preview
+@Composable
+private fun TripHistoryScreenPreview() {
+    dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
+        androidx.compose.material3.Surface {
+            TripHistoryScreen(
+                uiState = TripHistoryUiState(
+                    trips = listOf(
+                        dev.wads.motoridecallconnect.data.model.Trip(1, System.currentTimeMillis(), System.currentTimeMillis() + 3600000, 3600000, "Galaxy S23"),
+                        dev.wads.motoridecallconnect.data.model.Trip(2, System.currentTimeMillis() - 86400000, System.currentTimeMillis() - 82800000, 3600000, "iPhone 15")
+                    )
+                ),
+                onTripClick = {}
+            )
+        }
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Empty History")
+@Composable
+private fun TripHistoryEmptyPreview() {
+    dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
+        androidx.compose.material3.Surface {
+            TripHistoryScreen(
+                uiState = TripHistoryUiState(trips = emptyList()),
+                onTripClick = {}
+            )
+        }
+    }
+}

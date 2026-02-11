@@ -1,6 +1,10 @@
 package dev.wads.motoridecallconnect.ui.navigation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -10,29 +14,95 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import dev.wads.motoridecallconnect.data.local.UserPreferences
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripScreen
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel
+import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
+import dev.wads.motoridecallconnect.ui.components.AudioTestModal
+import dev.wads.motoridecallconnect.ui.login.LoginScreen
+import dev.wads.motoridecallconnect.ui.login.LoginViewModel
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.launch
+import dev.wads.motoridecallconnect.ui.history.TripDetailScreen
 import dev.wads.motoridecallconnect.ui.history.TripHistoryScreen
 import dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel
+import dev.wads.motoridecallconnect.ui.onboarding.OnboardingScreen
+import dev.wads.motoridecallconnect.ui.pairing.PairingScreen
+import dev.wads.motoridecallconnect.ui.settings.SettingsScreen
 
 @Composable
 fun AppNavigation(
     activeTripViewModel: ActiveTripViewModel,
     tripHistoryViewModel: TripHistoryViewModel,
+    loginViewModel: LoginViewModel,
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onStartDiscoveryClick: () -> Unit
 ) {
     val navController = rememberNavController()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val userPreferences = remember { UserPreferences(context) }
+    
+    val isLocalMode by userPreferences.localMode.collectAsState(initial = null)
+    var isUserLoggedIn by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser != null) }
+
+    if (!isUserLoggedIn && isLocalMode == false) {
+        LoginScreen(
+            viewModel = loginViewModel,
+            onLoginSuccess = { isFirebase ->
+                if (isFirebase) {
+                    isUserLoggedIn = true
+                } else {
+                    coroutineScope.launch {
+                        userPreferences.setLocalMode(true)
+                    }
+                }
+            }
+        )
+        return
+    }
+
+    if (isLocalMode == null) {
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        return
+    }
+
+    val onboardingCompleted by userPreferences.onboardingCompleted.collectAsState(initial = null)
+    var showAudioTest by remember { mutableStateOf(false) }
+
+    if (onboardingCompleted == false) {
+        OnboardingScreen(onComplete = { /* State update will trigger recomposition */ })
+        return
+    }
+
+    if (onboardingCompleted == null) {
+        // Loading...
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        return
+    }
+
+    if (showAudioTest) {
+        AudioTestModal(onDismissRequest = { showAudioTest = false })
+    }
+
     val items = listOf(
         Screen.ActiveTrip,
         Screen.TripHistory,
+        Screen.Settings
     )
 
     Scaffold(
@@ -70,21 +140,56 @@ fun AppNavigation(
                     uiState = uiState,
                     onStartTripClick = onStartTripClick,
                     onEndTripClick = onEndTripClick,
-                    onStartDiscoveryClick = onStartDiscoveryClick,
+                    onStartDiscoveryClick = {
+                        navController.navigate("pairing")
+                    },
                     onModeChange = { activeTripViewModel.onModeChange(it) },
-                    onStartCommandChange = { activeTripViewModel.onStartCommandChange(it) },
-                    onStopCommandChange = { activeTripViewModel.onStopCommandChange(it) },
-                    onRecordingToggle = { activeTripViewModel.onRecordingToggle(it) }
+                    onStartCommandChange = { 
+                        activeTripViewModel.onModeChange(OperatingMode.VOICE_COMMAND) // Implicit update?
+                        // TODO: Add specific update method to VM 
+                    },
+                    onStopCommandChange = { 
+                        // TODO: Add specific update method to VM 
+                    },
+                    onRecordingToggle = { /* TODO VM update */ }
                 )
             }
             composable(Screen.TripHistory.route) {
                 val uiState by tripHistoryViewModel.uiState.collectAsState()
-                TripHistoryScreen(uiState = uiState, onTripClick = {
-                    navController.navigate(Screen.TripDetails.createRoute(it))
-                })
+                TripHistoryScreen(
+                    uiState = uiState,
+                    onTripClick = { tripId ->
+                        navController.navigate("trip_detail/$tripId")
+                    }
+                )
             }
-            composable(Screen.TripDetails.route) {
-                // TODO: Implement Trip Details Screen
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onTestAudio = { showAudioTest = true },
+                    onLogout = {
+                        FirebaseAuth.getInstance().signOut()
+                        coroutineScope.launch {
+                            userPreferences.setLocalMode(false)
+                            isUserLoggedIn = false
+                        }
+                    }
+                )
+            }
+            composable(
+                route = "trip_detail/{tripId}",
+                arguments = listOf(navArgument("tripId") { type = NavType.LongType })
+            ) { backStackEntry ->
+                val tripId = backStackEntry.arguments?.getLong("tripId") ?: 0L
+                TripDetailScreen(
+                    tripId = tripId,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+            composable("pairing") {
+                PairingScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
             }
         }
     }

@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -51,3 +52,20 @@ fun StatusBadge(
 }
 
 private data class BadgeConfig(val color: Color, val label: String, val pulse: Boolean)
+
+@androidx.compose.ui.tooling.preview.Preview
+@Composable
+private fun StatusBadgePreview() {
+    dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
+        androidx.compose.foundation.layout.Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+        ) {
+            StatusBadge(status = BadgeStatus.Connected)
+            StatusBadge(status = BadgeStatus.Disconnected)
+            StatusBadge(status = BadgeStatus.Connecting)
+            StatusBadge(status = BadgeStatus.Error)
+            StatusBadge(status = BadgeStatus.Excellent)
+        }
+    }
+}
