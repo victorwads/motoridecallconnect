@@ -17,9 +17,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 
 enum class OperatingMode {
@@ -48,6 +45,15 @@ data class TranscriptQueueItemUi(
     val failureReason: String? = null
 )
 
+data class TranscriptEntryUi(
+    val id: String,
+    val authorId: String?,
+    val authorName: String,
+    val text: String,
+    val timestampMs: Long,
+    val isPartial: Boolean = false
+)
+
 data class ActiveTripUiState(
     val discoveredServices: List<NsdServiceInfo> = emptyList(),
     val isTripActive: Boolean = false,
@@ -61,7 +67,7 @@ data class ActiveTripUiState(
     val connectedPeer: Device? = null,
     val audioRouteLabel: String = "Bluetooth headset unavailable",
     val isBluetoothAudioActive: Boolean = false,
-    val transcript: List<String> = emptyList(),
+    val transcriptEntries: List<TranscriptEntryUi> = emptyList(),
     val transcriptQueue: List<TranscriptQueueItemUi> = emptyList(),
     val transcriptQueuePendingCount: Int = 0,
     val transcriptQueueProcessingCount: Int = 0,
@@ -73,7 +79,7 @@ data class ActiveTripUiState(
 class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() {
     companion object {
         private const val TAG = "ActiveTripViewModel"
-        private val transcriptTimeFormatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+        private const val PARTIAL_TRANSCRIPT_ID = "local_partial"
     }
 
     private val _uiState = MutableStateFlow(ActiveTripUiState())
@@ -114,7 +120,7 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             currentTripId = tripId,
             hostUid = targetHostUid,
             tripPath = tripPath,
-            transcript = emptyList()
+            transcriptEntries = emptyList()
         ) }
 
         if (targetHostUid == myUid) {
@@ -132,12 +138,25 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                 repository.getTranscripts(subscribeHostUid, subscribeTripId).collect { lines ->
                     _uiState.update { state ->
                         // Merge partial results from local state with final results from Firebase
-                        val firebaseList = lines.map { line ->
-                            "${formatTranscriptTime(line.timestamp)} - ${line.authorName}: ${line.text}"
+                        val firebaseEntries = lines.mapIndexed { index, line ->
+                            TranscriptEntryUi(
+                                id = "firebase_${line.authorId}_${line.timestamp}_$index",
+                                authorId = line.authorId.takeIf { it.isNotBlank() },
+                                authorName = line.authorName.ifBlank { "Unknown" },
+                                text = line.text,
+                                timestampMs = line.timestamp,
+                                isPartial = line.isPartial
+                            )
                         }
-                        val localPartial = state.transcript.lastOrNull()?.takeIf { it.startsWith("Parcial:") }
+                        val localPartial = state.transcriptEntries.lastOrNull()?.takeIf { it.isPartial }
 
-                        state.copy(transcript = if (localPartial != null) firebaseList + localPartial else firebaseList)
+                        state.copy(
+                            transcriptEntries = if (localPartial != null) {
+                                firebaseEntries + localPartial
+                            } else {
+                                firebaseEntries
+                            }
+                        )
                     }
                 }
             }
@@ -320,12 +339,23 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             if (shouldRenderOnCurrentTrip) {
                 // Show immediately in UI; Firestore listener will later reconcile authoritative lines.
                 _uiState.update { s ->
-                    val updated = s.transcript.toMutableList()
-                    if (updated.isNotEmpty() && updated.last().startsWith("Parcial:")) {
+                    val updated = s.transcriptEntries.toMutableList()
+                    if (updated.isNotEmpty() && updated.last().isPartial) {
                         updated.removeAt(updated.lastIndex)
                     }
-                    updated.add("${formatTranscriptTime(resolvedTimestamp)} - Você: $newTranscript")
-                    s.copy(transcript = updated)
+                    val authorId = FirebaseAuth.getInstance().currentUser?.uid
+                    val authorName = FirebaseAuth.getInstance().currentUser?.displayName ?: "Você"
+                    updated.add(
+                        TranscriptEntryUi(
+                            id = "local_final_${resolvedTimestamp}_${newTranscript.hashCode()}",
+                            authorId = authorId,
+                            authorName = authorName,
+                            text = newTranscript,
+                            timestampMs = resolvedTimestamp,
+                            isPartial = false
+                        )
+                    )
+                    s.copy(transcriptEntries = updated)
                 }
             }
 
@@ -352,13 +382,23 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             }
             // Partial results stay local-only for smoothness
             _uiState.update { s ->
-                val currentTranscript = s.transcript.toMutableList()
-                if (currentTranscript.isEmpty() || !currentTranscript.last().startsWith("Parcial:")) {
-                    currentTranscript.add("Parcial: $newTranscript")
+                val currentTranscript = s.transcriptEntries.toMutableList()
+                val authorId = FirebaseAuth.getInstance().currentUser?.uid
+                val authorName = FirebaseAuth.getInstance().currentUser?.displayName ?: "Você"
+                val partialEntry = TranscriptEntryUi(
+                    id = PARTIAL_TRANSCRIPT_ID,
+                    authorId = authorId,
+                    authorName = authorName,
+                    text = newTranscript,
+                    timestampMs = resolvedTimestamp,
+                    isPartial = true
+                )
+                if (currentTranscript.isEmpty() || !currentTranscript.last().isPartial) {
+                    currentTranscript.add(partialEntry)
                 } else {
-                    currentTranscript[currentTranscript.lastIndex] = "Parcial: $newTranscript"
+                    currentTranscript[currentTranscript.lastIndex] = partialEntry
                 }
-                s.copy(transcript = currentTranscript)
+                s.copy(transcriptEntries = currentTranscript)
             }
         }
     }
@@ -372,12 +412,6 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             TranscriptionChunkStatus.PENDING -> TranscriptQueueItemStatus.PENDING
             TranscriptionChunkStatus.PROCESSING -> TranscriptQueueItemStatus.PROCESSING
             TranscriptionChunkStatus.FAILED -> TranscriptQueueItemStatus.FAILED
-        }
-    }
-
-    private fun formatTranscriptTime(timestamp: Long): String {
-        return synchronized(transcriptTimeFormatter) {
-            transcriptTimeFormatter.format(Date(timestamp))
         }
     }
 

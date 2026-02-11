@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -41,6 +42,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -167,7 +169,7 @@ fun ActiveTripScreen(
         }
 
         // --- Transcription List ---
-        if (uiState.isTripActive || uiState.transcript.isNotEmpty() || uiState.transcriptQueue.isNotEmpty()) {
+        if (uiState.isTripActive || uiState.transcriptEntries.isNotEmpty() || uiState.transcriptQueue.isNotEmpty()) {
             StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val queueStatusText = when {
@@ -196,25 +198,64 @@ fun ActiveTripScreen(
                         }
                     }
 
-                    if (uiState.transcript.isEmpty() && uiState.transcriptQueue.isEmpty()) {
+                    if (uiState.transcriptEntries.isEmpty() && uiState.transcriptQueue.isEmpty()) {
                         Text(
                             text = stringResource(R.string.transcription_waiting_speech),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    uiState.transcript.takeLast(10).forEach { line ->
-                        Text(
-                            text = line,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (line.startsWith("Parcial:")) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
-                        )
+                    uiState.transcriptEntries.takeLast(10).forEach { entry ->
+                        TranscriptEntryLine(item = entry)
                     }
                 }
             }
         }
         
         Spacer(modifier = Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun TranscriptEntryLine(item: TranscriptEntryUi) {
+    val localUser = FirebaseAuth.getInstance().currentUser
+    val localUid = localUser?.uid
+    val photoOverride = if (!localUid.isNullOrBlank() && localUid == item.authorId) {
+        localUser.photoUrl?.toString()
+    } else {
+        null
+    }
+    val timeLabel = remember(item.timestampMs) {
+        DateFormat.format("HH:mm:ss", item.timestampMs).toString()
+    }
+    val lineColor = if (item.isPartial) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        ParticipantAvatar(
+            userId = item.authorId,
+            name = item.authorName,
+            photoUrlOverride = photoOverride,
+            size = 28.dp
+        )
+        Text(
+            text = item.text,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = lineColor
+        )
+        Text(
+            text = timeLabel,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -366,52 +407,21 @@ private fun ParticipantTransmissionTile(
     val borderColor = if (isActive) Color(0xFF22C55E) else MaterialTheme.colorScheme.outline
     val fillColor = if (isActive) Color(0xFF22C55E).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant
     val circleSize: Dp = 54.dp
-    val placeholderPainter = rememberVectorPainter(Icons.Default.Person)
-    var resolvedPhotoUrl by remember(userId, photoUrlOverride) { mutableStateOf(photoUrlOverride) }
-
-    LaunchedEffect(userId, photoUrlOverride) {
-        if (!photoUrlOverride.isNullOrBlank()) {
-            resolvedPhotoUrl = photoUrlOverride
-            return@LaunchedEffect
-        }
-        resolvedPhotoUrl = if (userId.isNullOrBlank()) {
-            null
-        } else {
-            runCatching { UserRepository.getInstance().getUserProfile(userId)?.photoUrl }.getOrNull()
-        }
-    }
 
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(circleSize)
-                .border(width = 3.dp, color = borderColor, shape = CircleShape)
-                .background(fillColor, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!resolvedPhotoUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = resolvedPhotoUrl,
-                    contentDescription = name,
-                    modifier = Modifier
-                        .size(circleSize - 8.dp)
-                        .clip(CircleShape),
-                    contentScale = ContentScale.Crop,
-                    placeholder = placeholderPainter,
-                    error = placeholderPainter
-                )
-            } else {
-                Text(
-                    text = name.trim().take(1).uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
+        ParticipantAvatar(
+            userId = userId,
+            name = name,
+            photoUrlOverride = photoUrlOverride,
+            size = circleSize,
+            borderColor = borderColor,
+            fillColor = fillColor,
+            borderWidth = 3.dp
+        )
         Text(
             text = name,
             style = MaterialTheme.typography.labelLarge,
@@ -427,6 +437,61 @@ private fun ParticipantTransmissionTile(
     }
 }
 
+@Composable
+private fun ParticipantAvatar(
+    userId: String?,
+    name: String,
+    photoUrlOverride: String? = null,
+    size: Dp,
+    borderColor: Color = Color.Transparent,
+    fillColor: Color = MaterialTheme.colorScheme.surfaceVariant,
+    borderWidth: Dp = 0.dp
+) {
+    val placeholderPainter = rememberVectorPainter(Icons.Default.Person)
+    var resolvedPhotoUrl by remember(userId, photoUrlOverride) { mutableStateOf(photoUrlOverride) }
+
+    LaunchedEffect(userId, photoUrlOverride) {
+        if (!photoUrlOverride.isNullOrBlank()) {
+            resolvedPhotoUrl = photoUrlOverride
+            return@LaunchedEffect
+        }
+        resolvedPhotoUrl = if (userId.isNullOrBlank()) {
+            null
+        } else {
+            runCatching { UserRepository.getInstance().getUserProfile(userId)?.photoUrl }.getOrNull()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .border(width = borderWidth, color = borderColor, shape = CircleShape)
+            .background(fillColor, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!resolvedPhotoUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = resolvedPhotoUrl,
+                contentDescription = name,
+                modifier = Modifier
+                    .size(size - if (borderWidth > 0.dp) (borderWidth * 2f + 2.dp) else 4.dp)
+                    .clip(CircleShape),
+                contentScale = ContentScale.Crop,
+                placeholder = placeholderPainter,
+                error = placeholderPainter
+            )
+        } else {
+            Text(
+                text = name.trim().take(1).uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Clip
+            )
+        }
+    }
+}
+
 @androidx.compose.ui.tooling.preview.Preview
 @Composable
 private fun ActiveTripScreenPreview() {
@@ -436,7 +501,16 @@ private fun ActiveTripScreenPreview() {
                 uiState = ActiveTripUiState(
                     connectionStatus = ConnectionStatus.CONNECTED,
                     discoveredServices = emptyList(),
-                    transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
+                    transcriptEntries = listOf(
+                        TranscriptEntryUi(
+                            id = "preview_1",
+                            authorId = "me",
+                            authorName = "Você",
+                            text = "Olá, tudo bem?",
+                            timestampMs = System.currentTimeMillis(),
+                            isPartial = false
+                        )
+                    )
                 ),
                 onStartTripClick = {},
                 onEndTripClick = {}
