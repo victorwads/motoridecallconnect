@@ -76,7 +76,11 @@ fun WelcomeStep(onNext: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.height(300.dp).fillMaxWidth()) {
             // Placeholder for Image
-            Box(modifier = Modifier.fillMaxSize().background(Color.DarkGray)) 
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()

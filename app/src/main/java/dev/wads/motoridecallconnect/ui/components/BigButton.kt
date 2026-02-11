@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,13 +54,46 @@ fun BigButton(
     }
 
     val colors = when (variant) {
-        ButtonVariant.Primary -> ButtonDefaults.buttonColors()
-        ButtonVariant.Secondary -> ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
-        ButtonVariant.Destructive -> ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
-        ButtonVariant.Success -> ButtonDefaults.buttonColors(containerColor = Color(0xFF22C55E))
-        ButtonVariant.Warning -> ButtonDefaults.buttonColors(containerColor = Color(0xFFEAB308))
-        ButtonVariant.Outline -> ButtonDefaults.outlinedButtonColors()
+        ButtonVariant.Primary -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ButtonVariant.Secondary -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ButtonVariant.Destructive -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.error,
+            contentColor = MaterialTheme.colorScheme.onError,
+            disabledContainerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.35f),
+            disabledContentColor = MaterialTheme.colorScheme.onError.copy(alpha = 0.7f)
+        )
+        ButtonVariant.Success -> ButtonDefaults.buttonColors(
+            containerColor = Color(0xFF1E8E3E),
+            contentColor = Color(0xFFFFFFFF),
+            disabledContainerColor = Color(0xFF1E8E3E).copy(alpha = 0.35f),
+            disabledContentColor = Color(0xFFFFFFFF).copy(alpha = 0.7f)
+        )
+        ButtonVariant.Warning -> ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFF59E0B),
+            contentColor = Color(0xFF1F1A09),
+            disabledContainerColor = Color(0xFFF59E0B).copy(alpha = 0.35f),
+            disabledContentColor = Color(0xFF1F1A09).copy(alpha = 0.7f)
+        )
+        ButtonVariant.Outline -> ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
+
+    val outlineBorder = BorderStroke(
+        width = 1.dp,
+        color = if (disabled) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.outline
+    )
     
     val buttonModifier = modifier
         .height(height)
@@ -70,7 +105,8 @@ fun BigButton(
             modifier = buttonModifier,
             enabled = !disabled,
             shape = RoundedCornerShape(8.dp),
-            colors = colors
+            colors = colors,
+            border = outlineBorder
         ) {
             ButtonContent(icon, text, fontSize)
         }

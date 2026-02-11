@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -28,7 +29,7 @@ fun StatusBadge(
 ) {
     val config = when (status) {
         BadgeStatus.Connected -> BadgeConfig(Color(0xFF22C55E), "Conectado", false)
-        BadgeStatus.Disconnected -> BadgeConfig(Color.Gray, "Não conectado", false)
+        BadgeStatus.Disconnected -> BadgeConfig(MaterialTheme.colorScheme.outline, "Não conectado", false)
         BadgeStatus.Connecting -> BadgeConfig(Color(0xFFEAB308), "Conectando…", true)
         BadgeStatus.Error -> BadgeConfig(Color(0xFFEF4444), "Erro", true)
         BadgeStatus.Excellent -> BadgeConfig(Color(0xFF22C55E), "Excelente", false)

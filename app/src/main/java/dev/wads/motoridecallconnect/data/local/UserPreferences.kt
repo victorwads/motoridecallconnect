@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,6 +29,9 @@ class UserPreferences(private val context: Context) {
         val VAD_START_DELAY_SECONDS = floatPreferencesKey("vad_start_delay_seconds")
         val VAD_STOP_DELAY_SECONDS = floatPreferencesKey("vad_stop_delay_seconds")
         val AUTO_CONNECT_NEARBY_FRIENDS = booleanPreferencesKey("auto_connect_nearby_friends")
+        val MICROPHONE_GAIN = floatPreferencesKey("microphone_gain")
+        val OUTPUT_VOLUME_RATIO = floatPreferencesKey("output_volume_ratio")
+        val TRANSMISSION_BITRATE_KBPS = intPreferencesKey("transmission_bitrate_kbps")
     }
 
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data
@@ -93,6 +97,21 @@ class UserPreferences(private val context: Context) {
     val autoConnectNearbyFriends: Flow<Boolean?> = context.dataStore.data
         .map { preferences ->
             preferences[AUTO_CONNECT_NEARBY_FRIENDS]
+        }
+
+    val microphoneGain: Flow<Float?> = context.dataStore.data
+        .map { preferences ->
+            preferences[MICROPHONE_GAIN]
+        }
+
+    val outputVolumeRatio: Flow<Float?> = context.dataStore.data
+        .map { preferences ->
+            preferences[OUTPUT_VOLUME_RATIO]
+        }
+
+    val transmissionBitrateKbps: Flow<Int?> = context.dataStore.data
+        .map { preferences ->
+            preferences[TRANSMISSION_BITRATE_KBPS]
         }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
@@ -170,6 +189,24 @@ class UserPreferences(private val context: Context) {
     suspend fun setAutoConnectNearbyFriends(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[AUTO_CONNECT_NEARBY_FRIENDS] = enabled
+        }
+    }
+
+    suspend fun setMicrophoneGain(gain: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[MICROPHONE_GAIN] = gain
+        }
+    }
+
+    suspend fun setOutputVolumeRatio(ratio: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[OUTPUT_VOLUME_RATIO] = ratio
+        }
+    }
+
+    suspend fun setTransmissionBitrateKbps(kbps: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[TRANSMISSION_BITRATE_KBPS] = kbps
         }
     }
 }
