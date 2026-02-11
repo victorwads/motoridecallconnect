@@ -5,8 +5,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
-import dev.wads.motoridecallconnect.data.model.TranscriptLine
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionChunkStatus
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
@@ -51,8 +51,12 @@ data class TranscriptEntryUi(
     val authorName: String,
     val text: String,
     val timestampMs: Long,
-    val isPartial: Boolean = false
-)
+    val status: TranscriptStatus = TranscriptStatus.SUCCESS,
+    val errorMessage: String? = null
+) {
+    val isPartial: Boolean
+        get() = status == TranscriptStatus.PROCESSING
+}
 
 data class ActiveTripUiState(
     val discoveredServices: List<NsdServiceInfo> = emptyList(),
@@ -135,20 +139,22 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         val subscribeTripId = parsedTripPath.second ?: tripId
         if (!subscribeHostUid.isNullOrBlank() && subscribeTripId.isNotBlank()) {
             transcriptJob = viewModelScope.launch {
-                repository.getTranscripts(subscribeHostUid, subscribeTripId).collect { lines ->
+                repository.getTranscriptEntries(subscribeHostUid, subscribeTripId).collect { entries ->
                     _uiState.update { state ->
                         // Merge partial results from local state with final results from Firebase
-                        val firebaseEntries = lines.mapIndexed { index, line ->
+                        val firebaseEntries = entries.map { entry ->
                             TranscriptEntryUi(
-                                id = "firebase_${line.authorId}_${line.timestamp}_$index",
-                                authorId = line.authorId.takeIf { it.isNotBlank() },
-                                authorName = line.authorName.ifBlank { "Unknown" },
-                                text = line.text,
-                                timestampMs = line.timestamp,
-                                isPartial = line.isPartial
+                                id = entry.id,
+                                authorId = entry.authorId.takeIf { it.isNotBlank() },
+                                authorName = entry.authorName.ifBlank { "Unknown" },
+                                text = entry.text,
+                                timestampMs = entry.timestamp,
+                                status = entry.status,
+                                errorMessage = entry.errorMessage
                             )
                         }
-                        val localPartial = state.transcriptEntries.lastOrNull()?.takeIf { it.isPartial }
+                        val localPartial = state.transcriptEntries.lastOrNull()
+                            ?.takeIf { it.id == PARTIAL_TRANSCRIPT_ID }
 
                         state.copy(
                             transcriptEntries = if (localPartial != null) {
@@ -314,17 +320,10 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         newTranscript: String,
         isFinal: Boolean,
         targetTripId: String? = null,
-        targetHostUid: String? = null,
-        targetTripPath: String? = null,
         transcriptTimestampMs: Long? = null
     ) {
         val state = _uiState.value
         val resolvedTripId = targetTripId ?: state.currentTripId
-        val resolvedHostUid = targetHostUid
-            ?: parseTripPath(targetTripPath).first
-            ?: state.hostUid
-            ?: parseTripPath(state.tripPath).first
-            ?: FirebaseAuth.getInstance().currentUser?.uid
         val resolvedTimestamp = transcriptTimestampMs ?: System.currentTimeMillis()
         val shouldRenderOnCurrentTrip = resolvedTripId != null && resolvedTripId == state.currentTripId
         Log.d(
@@ -334,8 +333,6 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         )
 
         if (isFinal) {
-            val tripId = resolvedTripId ?: return
-
             if (shouldRenderOnCurrentTrip) {
                 // Show immediately in UI; Firestore listener will later reconcile authoritative lines.
                 _uiState.update { s ->
@@ -352,28 +349,10 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                             authorName = authorName,
                             text = newTranscript,
                             timestampMs = resolvedTimestamp,
-                            isPartial = false
+                            status = TranscriptStatus.SUCCESS
                         )
                     )
                     s.copy(transcriptEntries = updated)
-                }
-            }
-
-            if (true) { // TODO: Re-wire this to the settings view model
-                viewModelScope.launch {
-                    try {
-                        repository.insertTranscriptLine(
-                            TranscriptLine(
-                                tripId = tripId,
-                                text = newTranscript,
-                                timestamp = resolvedTimestamp,
-                                isPartial = false
-                            ),
-                            targetHostUid = resolvedHostUid
-                        )
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "Failed to persist transcript line for tripId=$tripId", t)
-                    }
                 }
             }
         } else {
@@ -391,7 +370,7 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                     authorName = authorName,
                     text = newTranscript,
                     timestampMs = resolvedTimestamp,
-                    isPartial = true
+                    status = TranscriptStatus.PROCESSING
                 )
                 if (currentTranscript.isEmpty() || !currentTranscript.last().isPartial) {
                     currentTranscript.add(partialEntry)

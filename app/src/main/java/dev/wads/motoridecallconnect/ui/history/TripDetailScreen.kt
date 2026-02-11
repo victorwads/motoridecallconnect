@@ -29,13 +29,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
+import dev.wads.motoridecallconnect.ui.components.TranscriptFeed
+import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -123,29 +124,21 @@ fun TripDetailScreen(
                     }
 
                     StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
-                        if (uiState.transcripts.isEmpty()) {
-                            Text(
-                                text = stringResource(R.string.no_transcript_records),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                uiState.transcripts.forEach { line ->
-                                    Row {
-                                        Text(
-                                            text = formatTime(line.timestamp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontFamily = FontFamily.Monospace,
-                                            modifier = Modifier.width(80.dp)
-                                        )
-                                        Text(text = line.text, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                            }
-                        }
+                        TranscriptFeed(
+                            items = uiState.transcripts.map { entry ->
+                                TranscriptFeedItem(
+                                    id = entry.id,
+                                    authorId = entry.authorId,
+                                    authorName = entry.authorName,
+                                    text = entry.text,
+                                    timestampMs = entry.timestamp,
+                                    status = entry.status,
+                                    errorMessage = entry.errorMessage
+                                )
+                            },
+                            emptyText = stringResource(R.string.no_transcript_records),
+                            maxItems = 500
+                        )
                     }
 
                     BigButton(
@@ -186,11 +179,6 @@ private fun DetailItem(label: String, value: String) {
 
 private fun formatDate(timestamp: Long): String {
     val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-    return sdf.format(Date(timestamp))
-}
-
-private fun formatTime(timestamp: Long): String {
-    val sdf = SimpleDateFormat("[HH:mm:ss]", Locale.getDefault())
     return sdf.format(Date(timestamp))
 }
 

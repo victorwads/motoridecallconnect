@@ -3,7 +3,8 @@ package dev.wads.motoridecallconnect.ui.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
-import dev.wads.motoridecallconnect.data.model.TranscriptLine
+import dev.wads.motoridecallconnect.data.model.TranscriptEntry
+import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import kotlinx.coroutines.Job
@@ -18,7 +19,7 @@ import kotlinx.coroutines.launch
 
 data class TripDetailUiState(
     val trip: Trip? = null,
-    val transcripts: List<TranscriptLine> = emptyList(),
+    val transcripts: List<TranscriptEntry> = emptyList(),
     val isLoading: Boolean = true,
     val isDeleting: Boolean = false,
     val errorMessage: String? = null
@@ -40,7 +41,7 @@ class TripDetailViewModel(private val repository: TripRepository) : ViewModel() 
             val transcriptFlow = if (currentUserId.isNullOrEmpty()) {
                 flowOf(emptyList())
             } else {
-                repository.getTranscripts(currentUserId, tripId)
+                repository.getTranscriptEntries(currentUserId, tripId)
             }
 
             combine(
@@ -49,7 +50,18 @@ class TripDetailViewModel(private val repository: TripRepository) : ViewModel() 
             ) { tripWithTranscripts, remoteTranscripts ->
                 val trip = tripWithTranscripts?.trip
                 val transcripts = if (currentUserId.isNullOrEmpty()) {
-                    tripWithTranscripts?.transcripts ?: emptyList()
+                    tripWithTranscripts?.transcripts?.mapIndexed { index, line ->
+                        TranscriptEntry(
+                            id = "local_${line.id}_$index",
+                            tripId = line.tripId,
+                            authorId = line.authorId,
+                            authorName = line.authorName.ifBlank { "Unknown" },
+                            text = line.text,
+                            timestamp = line.timestamp,
+                            status = if (line.isPartial) TranscriptStatus.PROCESSING else TranscriptStatus.SUCCESS,
+                            errorMessage = null
+                        )
+                    } ?: emptyList()
                 } else {
                     remoteTranscripts
                 }

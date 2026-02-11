@@ -22,15 +22,19 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import dev.wads.motoridecallconnect.stt.NativeSpeechLanguageCatalog
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.stt.queue.FileBackedTranscriptionChunkQueue
+import dev.wads.motoridecallconnect.stt.queue.QueuedTranscriptionChunk
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionChunkQueue
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
 import dev.wads.motoridecallconnect.transport.SignalingClient
@@ -39,6 +43,7 @@ import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.vad.SimpleVad
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import org.webrtc.*
 import java.net.InetAddress
 import java.nio.ByteBuffer
@@ -87,6 +92,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private lateinit var audioCapturer: AudioCapturer
     private var speechRecognizerHelper: SpeechRecognizerHelper? = null
     private lateinit var signalingClient: SignalingClient
+    private val firestore = FirebaseFirestore.getInstance()
     private lateinit var audioManager: AudioManager
     private lateinit var vad: SimpleVad
     private lateinit var webRtcClient: WebRtcClient
@@ -1383,6 +1389,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "hadSpeech=$hadSpeech, trimmedLeadingMs=${trimmedChunk.removedLeadingMs}, " +
                 "trimmedTrailingMs=${trimmedChunk.removedTrailingMs}, reason=$reason, sttEngine=$sttEngine"
         )
+        persistTranscriptChunkToFirebase(
+            chunk = queuedChunk,
+            status = TranscriptStatus.PROCESSING,
+            text = "",
+            errorMessage = null
+        )
         publishTranscriptionQueueSnapshot(reason = "chunk_enqueued")
         scheduleTranscriptionQueueProcessing(reason = "chunk_enqueued")
     }
@@ -1485,7 +1497,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
                 val audioBytes = transcriptionQueue.readAudioBytes(queuedChunk)
                 if (audioBytes == null) {
-                    transcriptionQueue.markFailed(queuedChunk.id, "Missing persisted audio chunk file.")
+                    val failureReason = "Missing persisted audio chunk file."
+                    transcriptionQueue.markFailed(queuedChunk.id, failureReason)
+                    persistTranscriptChunkToFirebase(
+                        chunk = queuedChunk,
+                        status = TranscriptStatus.ERROR,
+                        text = "Transcription error",
+                        errorMessage = failureReason
+                    )
                     publishTranscriptionQueueSnapshot(reason = "chunk_processing_missing_audio")
                     continue
                 }
@@ -1503,6 +1522,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 when {
                     !result.error.isNullOrBlank() -> {
                         transcriptionQueue.markFailed(queuedChunk.id, result.error)
+                        persistTranscriptChunkToFirebase(
+                            chunk = queuedChunk,
+                            status = TranscriptStatus.ERROR,
+                            text = "Transcription error",
+                            errorMessage = result.error
+                        )
                         publishTranscriptionQueueSnapshot(reason = "chunk_processing_error")
                         Log.e(
                             TAG,
@@ -1510,7 +1535,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         )
                     }
                     finalText.isBlank() -> {
-                        transcriptionQueue.markFailed(queuedChunk.id, "No final transcript generated.")
+                        val failureReason = "No final transcript generated."
+                        transcriptionQueue.markFailed(queuedChunk.id, failureReason)
+                        persistTranscriptChunkToFirebase(
+                            chunk = queuedChunk,
+                            status = TranscriptStatus.ERROR,
+                            text = "Transcription error",
+                            errorMessage = failureReason
+                        )
                         publishTranscriptionQueueSnapshot(reason = "chunk_processing_empty_result")
                         Log.w(
                             TAG,
@@ -1519,6 +1551,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     }
                     else -> {
                         transcriptionQueue.markSucceeded(queuedChunk.id)
+                        persistTranscriptChunkToFirebase(
+                            chunk = queuedChunk,
+                            status = TranscriptStatus.SUCCESS,
+                            text = finalText,
+                            errorMessage = null
+                        )
                         publishTranscriptionQueueSnapshot(reason = "chunk_processing_success")
                         callback?.onTranscriptUpdate(
                             transcript = finalText,
@@ -1547,6 +1585,71 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 isTranscriptionWorkerRunning = false
             }
         }
+    }
+
+    private fun persistTranscriptChunkToFirebase(
+        chunk: QueuedTranscriptionChunk,
+        status: TranscriptStatus,
+        text: String,
+        errorMessage: String?
+    ) {
+        lifecycleScope.launch {
+            val currentUser = FirebaseAuth.getInstance().currentUser ?: return@launch
+            val destinationUid = resolveTranscriptDestinationUid(chunk, fallbackUid = currentUser.uid)
+            if (destinationUid.isNullOrBlank()) {
+                Log.w(TAG, "Unable to persist transcript chunk: destination uid missing. chunkId=${chunk.id}")
+                return@launch
+            }
+
+            val resolvedText = when {
+                text.isNotBlank() -> text
+                status == TranscriptStatus.PROCESSING -> "Processing audio..."
+                status == TranscriptStatus.ERROR -> "Transcription error"
+                else -> ""
+            }
+
+            val payload: MutableMap<String, Any?> = mutableMapOf(
+                "tripId" to chunk.tripId,
+                "authorId" to currentUser.uid,
+                "authorName" to (currentUser.displayName ?: "Unknown"),
+                "text" to resolvedText,
+                "timestamp" to chunk.createdAtMs,
+                "isPartial" to (status == TranscriptStatus.PROCESSING),
+                "status" to status.name
+            )
+            payload["errorMessage"] = errorMessage
+
+            try {
+                firestore.collection(FirestorePaths.ACCOUNTS)
+                    .document(destinationUid)
+                    .collection(FirestorePaths.RIDES)
+                    .document(chunk.tripId)
+                    .collection(FirestorePaths.RIDE_TRANSCRIPTS)
+                    .document(transcriptDocumentIdForChunk(chunk.id))
+                    .set(payload, SetOptions.merge())
+                    .await()
+            } catch (t: Throwable) {
+                Log.e(
+                    TAG,
+                    "Failed to persist transcript chunk status. chunkId=${chunk.id}, status=$status",
+                    t
+                )
+            }
+        }
+    }
+
+    private fun transcriptDocumentIdForChunk(chunkId: String): String {
+        return "chunk_$chunkId"
+    }
+
+    private fun resolveTranscriptDestinationUid(
+        chunk: QueuedTranscriptionChunk,
+        fallbackUid: String
+    ): String? {
+        return chunk.hostUid
+            ?: parseTripPath(chunk.tripPath).first
+            ?: currentTripHostUid
+            ?: fallbackUid
     }
 
     private fun publishTranscriptionQueueSnapshot(reason: String) {

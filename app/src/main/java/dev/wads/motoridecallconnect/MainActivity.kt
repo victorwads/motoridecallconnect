@@ -299,8 +299,6 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 newTranscript = transcript,
                 isFinal = isFinal,
                 targetTripId = tripId,
-                targetHostUid = hostUid,
-                targetTripPath = tripPath,
                 transcriptTimestampMs = timestampMs
             )
         }

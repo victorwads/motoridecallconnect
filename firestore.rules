@@ -74,9 +74,10 @@ service cloud.firestore {
             // Delete: Owner of Ride OR Author of Transcript
             allow delete: if isOwner(uid) || (resource.data.authorId == request.auth.uid);
             
-            // Update: No updates allowed on transcripts for now (integrity), or only author. 
-            // Let's allow author to update.
-            allow update: if isOwner(uid) || (resource.data.authorId == request.auth.uid);
+            // Update: owner or original author can update status/text,
+            // but authorId cannot be changed after creation.
+            allow update: if (isOwner(uid) || (resource.data.authorId == request.auth.uid))
+                          && request.resource.data.authorId == resource.data.authorId;
         }
       }
 

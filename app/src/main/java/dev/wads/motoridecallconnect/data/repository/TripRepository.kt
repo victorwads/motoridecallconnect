@@ -5,9 +5,12 @@ import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import dev.wads.motoridecallconnect.data.model.TranscriptEntry
 import dev.wads.motoridecallconnect.data.local.TripDao
 import dev.wads.motoridecallconnect.data.local.TripWithTranscripts
 import dev.wads.motoridecallconnect.data.model.TranscriptLine
+import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import kotlinx.coroutines.channels.awaitClose
@@ -165,6 +168,53 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
         }
     }
 
+    fun getTranscriptEntries(hostUid: String, tripId: String): Flow<List<TranscriptEntry>> {
+        return callbackFlow {
+            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                .document(hostUid)
+                .collection(FirestorePaths.RIDES)
+                .document(tripId)
+                .collection(FirestorePaths.RIDE_TRANSCRIPTS)
+                .orderBy("timestamp", Query.Direction.ASCENDING)
+                .addSnapshotListener { value, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+                    if (value != null) {
+                        val entries = value.documents.mapNotNull { document ->
+                            val line = document.toObject(TranscriptLine::class.java) ?: return@mapNotNull null
+                            val statusRaw = document.getString("status")?.uppercase()
+                            val resolvedStatus = when (statusRaw) {
+                                TranscriptStatus.PROCESSING.name -> TranscriptStatus.PROCESSING
+                                TranscriptStatus.ERROR.name -> TranscriptStatus.ERROR
+                                TranscriptStatus.SUCCESS.name -> TranscriptStatus.SUCCESS
+                                else -> if (line.isPartial) TranscriptStatus.PROCESSING else TranscriptStatus.SUCCESS
+                            }
+                            val resolvedText = when {
+                                line.text.isNotBlank() -> line.text
+                                resolvedStatus == TranscriptStatus.PROCESSING -> "Processing audio..."
+                                resolvedStatus == TranscriptStatus.ERROR -> "Transcription error"
+                                else -> ""
+                            }
+                            TranscriptEntry(
+                                id = document.id,
+                                tripId = line.tripId,
+                                authorId = line.authorId,
+                                authorName = line.authorName.ifBlank { "Unknown" },
+                                text = resolvedText,
+                                timestamp = line.timestamp,
+                                status = resolvedStatus,
+                                errorMessage = document.getString("errorMessage")?.takeIf { it.isNotBlank() }
+                            )
+                        }
+                        trySend(entries)
+                    }
+                }
+            awaitClose { listener.remove() }
+        }
+    }
+
     suspend fun insertTranscriptLine(transcriptLine: TranscriptLine, targetHostUid: String? = null) {
         val user = auth.currentUser
         if (user != null) {
@@ -185,6 +235,36 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
         } else {
             tripDaoProvider().insertTranscriptLine(transcriptLine)
         }
+    }
+
+    suspend fun upsertTranscriptEntryStatus(
+        transcriptId: String,
+        tripId: String,
+        status: TranscriptStatus,
+        text: String,
+        timestamp: Long,
+        targetHostUid: String? = null,
+        errorMessage: String? = null
+    ) {
+        val user = auth.currentUser ?: return
+        val destinationUid = targetHostUid ?: user.uid
+        val payload: MutableMap<String, Any?> = mutableMapOf(
+            "tripId" to tripId,
+            "authorId" to user.uid,
+            "authorName" to (user.displayName ?: "Unknown"),
+            "text" to text,
+            "timestamp" to timestamp,
+            "isPartial" to (status == TranscriptStatus.PROCESSING),
+            "status" to status.name
+        )
+        payload["errorMessage"] = errorMessage
+
+        val tripRef = firestore.collection(FirestorePaths.ACCOUNTS)
+            .document(destinationUid)
+            .collection(FirestorePaths.RIDES)
+            .document(tripId)
+        val lineRef = tripRef.collection(FirestorePaths.RIDE_TRANSCRIPTS).document(transcriptId)
+        lineRef.set(payload, SetOptions.merge()).await()
     }
 
     suspend fun deleteTrip(tripId: String) {

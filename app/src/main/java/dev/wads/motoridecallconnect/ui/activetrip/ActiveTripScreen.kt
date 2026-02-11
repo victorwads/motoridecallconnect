@@ -51,6 +51,9 @@ import androidx.compose.ui.draw.clip
 import coil.compose.AsyncImage
 import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
+import dev.wads.motoridecallconnect.data.model.TranscriptStatus
+import dev.wads.motoridecallconnect.ui.components.TranscriptFeed
+import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
 import dev.wads.motoridecallconnect.data.repository.UserRepository
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -199,63 +202,32 @@ fun ActiveTripScreen(
                     }
 
                     if (uiState.transcriptEntries.isEmpty() && uiState.transcriptQueue.isEmpty()) {
-                        Text(
-                            text = stringResource(R.string.transcription_waiting_speech),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        TranscriptFeed(
+                            items = emptyList(),
+                            emptyText = stringResource(R.string.transcription_waiting_speech)
                         )
-                    }
-                    uiState.transcriptEntries.takeLast(10).forEach { entry ->
-                        TranscriptEntryLine(item = entry)
+                    } else if (uiState.transcriptEntries.isNotEmpty()) {
+                        TranscriptFeed(
+                            items = uiState.transcriptEntries.map { entry ->
+                                TranscriptFeedItem(
+                                    id = entry.id,
+                                    authorId = entry.authorId,
+                                    authorName = entry.authorName,
+                                    text = entry.text,
+                                    timestampMs = entry.timestampMs,
+                                    status = entry.status,
+                                    errorMessage = entry.errorMessage
+                                )
+                            },
+                            emptyText = stringResource(R.string.transcription_waiting_speech),
+                            maxItems = 10
+                        )
                     }
                 }
             }
         }
         
         Spacer(modifier = Modifier.height(30.dp))
-    }
-}
-
-@Composable
-private fun TranscriptEntryLine(item: TranscriptEntryUi) {
-    val localUser = FirebaseAuth.getInstance().currentUser
-    val localUid = localUser?.uid
-    val photoOverride = if (!localUid.isNullOrBlank() && localUid == item.authorId) {
-        localUser.photoUrl?.toString()
-    } else {
-        null
-    }
-    val timeLabel = remember(item.timestampMs) {
-        DateFormat.format("HH:mm:ss", item.timestampMs).toString()
-    }
-    val lineColor = if (item.isPartial) {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        ParticipantAvatar(
-            userId = item.authorId,
-            name = item.authorName,
-            photoUrlOverride = photoOverride,
-            size = 28.dp
-        )
-        Text(
-            text = item.text,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
-            color = lineColor
-        )
-        Text(
-            text = timeLabel,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -508,7 +480,7 @@ private fun ActiveTripScreenPreview() {
                             authorName = "Você",
                             text = "Olá, tudo bem?",
                             timestampMs = System.currentTimeMillis(),
-                            isPartial = false
+                            status = TranscriptStatus.SUCCESS
                         )
                     )
                 ),
