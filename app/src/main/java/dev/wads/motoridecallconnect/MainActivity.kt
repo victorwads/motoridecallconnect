@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.IBinder
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,7 @@ import dev.wads.motoridecallconnect.service.AudioService
 import dev.wads.motoridecallconnect.ui.common.ViewModelFactory
 import dev.wads.motoridecallconnect.ui.navigation.AppNavigation
 import dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
@@ -43,6 +45,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private val socialRepository by lazy { dev.wads.motoridecallconnect.data.repository.SocialRepository() }
     private val deviceDiscoveryRepository by lazy { dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository(applicationContext) }
     private val viewModelFactory by lazy { ViewModelFactory(repository, socialRepository, deviceDiscoveryRepository) }
+    private val firebaseAuth by lazy { FirebaseAuth.getInstance() }
+    private var lastObservedAuthUid: String? = null
 
     private val activeTripViewModel by viewModels<dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel> { viewModelFactory }
     private val tripHistoryViewModel by viewModels<dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel> { viewModelFactory }
@@ -51,6 +55,23 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private val socialViewModel by viewModels<dev.wads.motoridecallconnect.ui.social.SocialViewModel> { viewModelFactory }
     private val pairingViewModel by viewModels<dev.wads.motoridecallconnect.ui.pairing.PairingViewModel> { viewModelFactory }
     private val settingsViewModel by viewModels<dev.wads.motoridecallconnect.ui.settings.SettingsViewModel>()
+    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
+        val currentUid = auth.currentUser?.uid
+        if (currentUid == null) {
+            lastObservedAuthUid = null
+            return@AuthStateListener
+        }
+
+        if (currentUid == lastObservedAuthUid) return@AuthStateListener
+
+        lastObservedAuthUid = currentUid
+        lifecycleScope.launch {
+            runCatching { socialRepository.updateMyPublicProfile() }
+                .onFailure { error ->
+                    Log.w("MainActivity", "Failed to update public profile for $currentUid", error)
+                }
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -102,10 +123,6 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        lifecycleScope.launch {
-            socialRepository.updateMyPublicProfile()
-        }
         
         setContent {
             MotoRideCallConnectTheme {
@@ -266,6 +283,16 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onPause() {
         super.onPause()
         pairingViewModel.stopDiscovery()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        firebaseAuth.addAuthStateListener(authStateListener)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        firebaseAuth.removeAuthStateListener(authStateListener)
     }
 
     override fun onDestroy() {
