@@ -5,8 +5,8 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 
-class WhisperEngine(private val context: Context) {
-    private val TAG = "WhisperEngine"
+class WhisperLib(private val context: Context) {
+    private val TAG = "WhisperLib"
     private var modelPath: String? = null
 
     companion object {
@@ -16,14 +16,14 @@ class WhisperEngine(private val context: Context) {
                 // System.loadLibrary("ggml") // If ggml is shared
                 // System.loadLibrary("whisper") // If whisper is shared
                 System.loadLibrary("appnative")
-                Log.d("WhisperEngine", "Native library appnative loaded")
+                Log.d("WhisperLib", "Native library appnative loaded")
             } catch (e: UnsatisfiedLinkError) {
-                Log.e("WhisperEngine", "Failed to load native library appnative", e)
+                Log.e("WhisperLib", "Failed to load native library appnative", e)
             }
         }
     }
 
-    external fun init(modelPath: String): Long
+    external fun initModel(modelPath: String): Long
     external fun transcribe(wavPath: String): String
     external fun transcribeBuffer(buffer: FloatArray): String
     external fun free()
@@ -31,7 +31,7 @@ class WhisperEngine(private val context: Context) {
     fun initialize(modelPath: String): Boolean {
         this.modelPath = modelPath
         Log.d(TAG, "Initializing with model: $modelPath")
-        val result = init(modelPath)
+        val result = initModel(modelPath)
         return if (result != 0L) {
             Log.d(TAG, "Whisper initialized successfully. Context: $result")
             true

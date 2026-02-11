@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 class SpeechRecognizerHelper(private val context: Context, private val listener: SpeechRecognitionListener) {
 
     private var speechRecognizer: SpeechRecognizer? = null
-    private val whisperEngine = WhisperEngine(context)
+    private val whisperLib = WhisperLib(context)
     var isUsingWhisper = false
         private set
 
@@ -39,8 +39,9 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
 
     private fun checkAndInitWhisper() {
         if (modelFile.exists()) {
+            Log.i("SpeechRecognizerHelper", "Model found at: ${modelFile.absolutePath}")
             try {
-                if (whisperEngine.initialize(modelFile.absolutePath)) {
+                if (whisperLib.initialize(modelFile.absolutePath)) {
                     isUsingWhisper = true
                     Log.i("SpeechRecognizerHelper", "Whisper initialized successfully.")
                 } else {
@@ -143,7 +144,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
                 floatData[i] = sample.toFloat() / 32768.0f
             }
             
-            val result = whisperEngine.transcribeBuffer(floatData)
+            val result = whisperLib.transcribeBuffer(floatData)
             if (result.isNotBlank()) {
                 listener.onFinalResults(result)
             }
@@ -152,7 +153,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
 
     fun destroy() {
         speechRecognizer?.destroy()
-        whisperEngine.free()
+        whisperLib.free()
     }
 
     private fun createRecognitionListener(): RecognitionListener {

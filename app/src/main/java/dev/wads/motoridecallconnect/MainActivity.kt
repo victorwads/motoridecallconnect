@@ -199,13 +199,13 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onModelDownloadProgress(progress: Int) {
         runOnUiThread {
-//            activeTripViewModel.updateModelDownloadStatus(true, progress)
+            activeTripViewModel.updateModelDownloadStatus(true, progress)
         }
     }
 
     override fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean?) {
         runOnUiThread {
-//            activeTripViewModel.updateModelDownloadStatus(isDownloading, if(isDownloading) 0 else 100)
+            activeTripViewModel.updateModelDownloadStatus(isDownloading, if(isDownloading) 0 else 100)
         }
     }
 

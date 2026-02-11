@@ -198,4 +198,8 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             }
         }
     }
+
+    fun updateModelDownloadStatus(isDownloading: Boolean, progress: Int) {
+        _uiState.update { it.copy(isModelDownloading = isDownloading, modelDownloadProgress = progress) }
+    }
 }
