@@ -17,6 +17,7 @@ class SignalingClient(private val listener: SignalingListener) {
     private var writer: PrintWriter? = null
 
     interface SignalingListener {
+        fun onPeerConnected()
         fun onOfferReceived(description: String)
         fun onAnswerReceived(description: String)
         fun onIceCandidateReceived(candidate: String)
@@ -32,6 +33,7 @@ class SignalingClient(private val listener: SignalingListener) {
                     writer = PrintWriter(it, true)
                 }
                 Log.d(TAG, "Signaling client connected.")
+                listener.onPeerConnected()
                 clientSocket?.let { handleConnection(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting signaling server", e)
@@ -47,6 +49,7 @@ class SignalingClient(private val listener: SignalingListener) {
                     writer = PrintWriter(it, true)
                 }
                 Log.d(TAG, "Connected to signaling peer.")
+                listener.onPeerConnected()
                 clientSocket?.let { handleConnection(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "Error connecting to peer", e)

@@ -19,8 +19,10 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.transport.SignalingClient
+import dev.wads.motoridecallconnect.transport.WebRtcClient
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.vad.SimpleVad
+import org.webrtc.*
 
 class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
 
@@ -31,6 +33,7 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
     private lateinit var signalingClient: SignalingClient
     private lateinit var audioManager: AudioManager
     private lateinit var vad: SimpleVad
+    private lateinit var webRtcClient: WebRtcClient
     private var audioFocusRequest: AudioFocusRequest? = null
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
 
@@ -46,6 +49,22 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
     }
 
+    private val peerConnectionObserver = object : PeerConnection.Observer {
+        override fun onIceCandidate(candidate: IceCandidate) {
+             signalingClient.sendMessage("ICE:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${candidate.sdp.replace("\n", "|")}")
+        }
+        override fun onDataChannel(p0: DataChannel?) {}
+        override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
+        override fun onIceConnectionReceivingChange(p0: Boolean) {}
+        override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+        override fun onAddStream(p0: MediaStream?) { Log.d("AudioService", "Received remote stream") }
+        override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
+        override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
+        override fun onRemoveStream(p0: MediaStream?) {}
+        override fun onRenegotiationNeeded() {}
+        override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
+    }
+
     inner class LocalBinder : Binder() {
         fun getService(): AudioService = this@AudioService
     }
@@ -58,6 +77,7 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
         audioCapturer = AudioCapturer(this)
         speechRecognizerHelper = SpeechRecognizerHelper(this, this)
         signalingClient = SignalingClient(this)
+        webRtcClient = WebRtcClient(this, peerConnectionObserver)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -105,16 +125,60 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
     }
 
     // --- SignalingListener Callbacks ---
+    override fun onPeerConnected() {
+        Log.d("AudioService", "Peer connected, creating offer")
+        webRtcClient.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                webRtcClient.setLocalDescription(this, sdp)
+                signalingClient.sendMessage("OFFER:${sdp.description.replace("\n", "|")}")
+            }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(p0: String?) {}
+            override fun onSetFailure(p0: String?) {}
+        })
+    }
+
     override fun onOfferReceived(description: String) {
-        // TODO: Handle received offer with WebRtcClient
+        val sdpString = description.replace("|", "\n")
+        val sdp = SessionDescription(SessionDescription.Type.OFFER, sdpString)
+        
+        webRtcClient.setRemoteDescription(object : SdpObserver {
+            override fun onSetSuccess() {
+                webRtcClient.createAnswer(object : SdpObserver {
+                    override fun onCreateSuccess(answerSdp: SessionDescription) {
+                        webRtcClient.setLocalDescription(this, answerSdp)
+                        signalingClient.sendMessage("ANSWER:${answerSdp.description.replace("\n", "|")}")
+                    }
+                    override fun onSetSuccess() {}
+                    override fun onCreateFailure(s: String?) {}
+                    override fun onSetFailure(s: String?) {}
+                })
+            }
+            override fun onCreateSuccess(s: SessionDescription?) {}
+            override fun onCreateFailure(s: String?) {}
+            override fun onSetFailure(s: String?) {}
+        }, sdp)
     }
 
     override fun onAnswerReceived(description: String) {
-        // TODO: Handle received answer with WebRtcClient
+        val sdpString = description.replace("|", "\n")
+        val sdp = SessionDescription(SessionDescription.Type.ANSWER, sdpString)
+        webRtcClient.setRemoteDescription(object : SdpObserver {
+             override fun onSetSuccess() {}
+             override fun onCreateSuccess(s: SessionDescription?) {}
+             override fun onCreateFailure(s: String?) {}
+             override fun onSetFailure(s: String?) {}
+        }, sdp)
     }
 
     override fun onIceCandidateReceived(candidate: String) {
-        // TODO: Handle received ICE candidate with WebRtcClient
+        val parts = candidate.split(":", limit = 3)
+        if (parts.size >= 3) {
+            val mid = parts[0]
+            val index = parts[1].toInt()
+            val sdp = parts[2].replace("|", "\n")
+            webRtcClient.addIceCandidate(IceCandidate(mid, index, sdp))
+        }
     }
 
     // --- AudioCapturerListener Callbacks ---
