@@ -41,7 +41,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         // Tuning knobs for chunk-based transcription behavior.
         private const val TRANSCRIPTION_MIN_CONTEXT_MS = 3_000L
-        private const val TRANSCRIPTION_SILENCE_FLUSH_MS = 5_000L
+        private const val TRANSCRIPTION_SILENCE_FLUSH_MS = 3_000L
         private const val TRANSCRIPTION_MAX_CHUNK_MS = 45_000L
     }
 
@@ -478,6 +478,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val silenceMs = consecutiveSilenceDurationMs
         val hadSpeech = chunkHadSpeech
         resetTranscriptionState(clearAudio = true)
+
+        if (!force && !hadSpeech) {
+            Log.d(
+                TAG,
+                "Dropping chunk without detected speech. bytes=${chunk.size}, " +
+                    "durationMs=$chunkDurationMs, silenceMs=$silenceMs, reason=$reason"
+            )
+            return
+        }
 
         totalChunksDispatched++
         val chunkId = totalChunksDispatched

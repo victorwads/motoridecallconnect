@@ -20,6 +20,9 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         private const val CAPTURE_SAMPLE_RATE_HZ = 48_000
         private const val WHISPER_SAMPLE_RATE_HZ = 16_000
         private const val MIN_WHISPER_SAMPLES = 16_000 // 1 second at 16 kHz
+        // Keep this easy to change during field tests.
+        private const val WHISPER_MODEL_NAME = "ggml-tiny.bin"
+        private const val WHISPER_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true"
     }
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -38,22 +41,30 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         fun onModelDownloadFinished(success: Boolean) {}
     }
 
-    private val modelName = "whisper-large-v3-turbo-q5_0.bin"
-    private val modelFile = File(context.filesDir, modelName)
-    private val modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true"
+    private val modelFile = File(context.filesDir, WHISPER_MODEL_NAME)
+    private val modelUrl = WHISPER_MODEL_URL
     private val downsampleFactor = CAPTURE_SAMPLE_RATE_HZ / WHISPER_SAMPLE_RATE_HZ
 
     init {
-        Log.i(TAG, "SpeechRecognizerHelper ready. Whisper initialization is lazy and starts only during trip.")
+        Log.i(
+            TAG,
+            "SpeechRecognizerHelper ready. model=$WHISPER_MODEL_NAME, " +
+                "lazyInitDuringTrip=true"
+        )
     }
 
     private fun checkAndInitWhisper() {
         if (modelFile.exists()) {
-            Log.i(TAG, "Model found at: ${modelFile.absolutePath}")
+            val modelSizeMb = modelFile.length().toDouble() / (1024.0 * 1024.0)
+            Log.i(
+                TAG,
+                "Model found at: ${modelFile.absolutePath} " +
+                    "sizeMb=${"%.2f".format(modelSizeMb)}"
+            )
             try {
                 if (whisperLib.initialize(modelFile.absolutePath)) {
                     isUsingWhisper = true
-                    Log.i(TAG, "Whisper initialized successfully.")
+                    Log.i(TAG, "Whisper initialized successfully with model=$WHISPER_MODEL_NAME.")
                 } else {
                     isUsingWhisper = false
                     Log.e(TAG, "Failed to initialize Whisper engine logic.")
