@@ -11,5 +11,6 @@ data class Trip(
     val startTime: Long = System.currentTimeMillis(),
     var endTime: Long? = null,
     var duration: Long? = null,
-    val peerDevice: String? = null
+    val peerDevice: String? = null,
+    val participants: List<String> = emptyList() // List of User UIDs
 )

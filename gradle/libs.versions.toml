@@ -16,6 +16,7 @@ appcompat = "1.7.1"
 room = "2.8.4"
 datastore = "1.1.2"
 webrtc = "137.7151.05"
+gson = "2.10.1"
 
 # Test
 junit = "4.13.2"
@@ -25,6 +26,7 @@ play-services-auth = "21.3.0"
 
 [libraries]
 webrtc = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-preference = { group = "androidx.preference", name = "preference", version.ref = "preference" }

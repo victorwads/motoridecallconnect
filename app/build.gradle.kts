@@ -52,6 +52,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
 
     implementation(libs.webrtc)
+    implementation(libs.gson)
 
     // Firebase
     implementation(platform(libs.firebase.bom))

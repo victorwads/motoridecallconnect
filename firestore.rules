@@ -38,10 +38,46 @@ service cloud.firestore {
         allow delete: if isOwner(friendUid) || isOwner(uid);
       }
 
-      // Rides: only owner can manage
+      // Rides: Owner can manage, Participants can read
       match /Rides/{rideId} {
-        allow get, list: if isOwner(uid);
+        
+        function isParticipant() {
+           return request.auth.uid in resource.data.participants;
+        }
+
+        // Read: Owner OR Participant
+        allow get: if isOwner(uid) || isParticipant();
+        allow list: if isOwner(uid); // Only owner lists their own rides for now. Guests need specific ID.
+
+        // Write: Only Owner can modify the Ride document itself
         allow create, update, delete: if isOwner(uid);
+
+        // Transcripts: 
+        match /Transcripts/{transcriptId} {
+            // Read: If user can read the parent Ride, they can read transcripts. 
+            // Since we can't easily check parent permission without 'get()', 
+            // we'll duplicate the participant check logic or rely on the parent doc existence check if possible.
+            // Using get() on parent Ride to check participants list.
+            
+            function isParentTripParticipant() {
+                let rideData = get(/databases/$(database)/documents/Accounts/$(uid)/Rides/$(rideId)).data;
+                return request.auth.uid in rideData.participants;
+            }
+
+            allow read: if isOwner(uid) || isParentTripParticipant();
+
+            // Create: Owner OR Participant
+            // Must enforce that authorId matches auth.uid
+            allow create: if (isOwner(uid) || isParentTripParticipant()) 
+                          && request.resource.data.authorId == request.auth.uid;
+
+            // Delete: Owner of Ride OR Author of Transcript
+            allow delete: if isOwner(uid) || (resource.data.authorId == request.auth.uid);
+            
+            // Update: No updates allowed on transcripts for now (integrity), or only author. 
+            // Let's allow author to update.
+            allow update: if isOwner(uid) || (resource.data.authorId == request.auth.uid);
+        }
       }
 
       // FriendRequests:

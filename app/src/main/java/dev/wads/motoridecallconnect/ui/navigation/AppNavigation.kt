@@ -42,8 +42,7 @@ import dev.wads.motoridecallconnect.ui.history.TripHistoryScreen
 import dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel
 import dev.wads.motoridecallconnect.ui.onboarding.OnboardingScreen
 import dev.wads.motoridecallconnect.ui.pairing.PairingScreen
-import dev.wads.motoridecallconnect.ui.friends.FriendsScreen
-import dev.wads.motoridecallconnect.ui.friends.FriendProfileScreen
+import dev.wads.motoridecallconnect.ui.social.SocialScreen
 import dev.wads.motoridecallconnect.ui.settings.SettingsScreen
 
 @Composable
@@ -51,6 +50,7 @@ fun AppNavigation(
     activeTripViewModel: ActiveTripViewModel,
     tripHistoryViewModel: TripHistoryViewModel,
     loginViewModel: LoginViewModel,
+    socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onStartDiscoveryClick: () -> Unit
@@ -117,8 +117,8 @@ fun AppNavigation(
                 val currentDestination = navBackStackEntry?.destination
                 items.forEach { screen ->
                     NavigationBarItem(
-                        icon = { Icon(stringResource(screen.label), contentDescription = null) },
-                        label = { Text(screen.label) },
+                        icon = { Icon(screen.icon, contentDescription = null) },
+                        label = { Text(stringResource(screen.label)) },
                         selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
                         onClick = {
                             navController.navigate(screen.route) {
@@ -198,24 +198,7 @@ fun AppNavigation(
                 )
             }
             composable(Screen.Friends.route) {
-                FriendsScreen(
-                    onNavigateToProfile = { friendId ->
-                        navController.navigate(Screen.FriendProfile.createRoute(friendId))
-                    }
-                )
-            }
-            composable(
-                route = Screen.FriendProfile.route,
-                arguments = listOf(navArgument("friendId") { type = NavType.StringType })
-            ) { backStackEntry ->
-                val friendId = backStackEntry.arguments?.getString("friendId") ?: ""
-                FriendProfileScreen(
-                    friendId = friendId,
-                    onNavigateBack = { navController.popBackStack() },
-                    onInvitePair = { 
-                        navController.navigate(Screen.Pairing.route)
-                    }
-                )
+                SocialScreen(viewModel = socialViewModel)
             }
         }
     }

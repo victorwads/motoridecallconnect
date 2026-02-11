@@ -11,12 +11,15 @@ import androidx.room.PrimaryKey
         parentColumns = ["id"],
         childColumns = ["tripId"],
         onDelete = ForeignKey.CASCADE
-    )]
+    )],
+    indices = [androidx.room.Index("tripId")]
 )
 data class TranscriptLine(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val tripId: String,
+    val authorId: String = "", // Firestore UID of the author
+    val authorName: String = "", // Display name for UI convenience
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
     val isPartial: Boolean
