@@ -226,6 +226,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
     }
 
+    fun unregisterCallback(callback: ServiceCallback) {
+        if (this.callback === callback) {
+            this.callback = null
+        }
+    }
+
     fun connectToPeer(device: Device) {
         if (isHostingEnabled) {
             setHostingEnabled(false)
@@ -858,6 +864,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             .setContentTitle("Moto Ride Call Connect")
             .setContentText("Intercomunicador ativo.")
             .setSmallIcon(R.drawable.ic_notification)
+            .setOngoing(true)
             .build()
     }
 

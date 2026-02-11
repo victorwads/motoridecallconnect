@@ -232,17 +232,15 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
-    private fun stopAndUnbindAudioService() {
+    private fun unbindAudioService() {
         if (isBound) {
+            audioService?.unregisterCallback(this)
             unbindService(connection)
             isBound = false
         }
         isBindingService = false
         pendingServiceActions.clear()
         audioService = null
-        Intent(this, AudioService::class.java).also { intent ->
-            stopService(intent)
-        }
     }
 
     override fun onTranscriptUpdate(transcript: String, isFinal: Boolean) {
@@ -299,15 +297,17 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onStart() {
         super.onStart()
         firebaseAuth.addAuthStateListener(authStateListener)
+        audioService?.registerCallback(this)
     }
 
     override fun onStop() {
         super.onStop()
         firebaseAuth.removeAuthStateListener(authStateListener)
+        audioService?.unregisterCallback(this)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopAndUnbindAudioService()
+        unbindAudioService()
     }
 }
