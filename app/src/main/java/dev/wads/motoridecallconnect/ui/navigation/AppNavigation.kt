@@ -51,6 +51,7 @@ import dev.wads.motoridecallconnect.ui.settings.SettingsScreen
 fun AppNavigation(
     activeTripViewModel: ActiveTripViewModel,
     tripHistoryViewModel: TripHistoryViewModel,
+    tripDetailViewModel: dev.wads.motoridecallconnect.ui.history.TripDetailViewModel,
     loginViewModel: LoginViewModel,
     socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
     pairingViewModel: PairingViewModel,
@@ -66,6 +67,8 @@ fun AppNavigation(
     
     val isLocalMode by userPreferences.localMode.collectAsState(initial = null)
     var isUserLoggedIn by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser != null) }
+
+    val isHosting by pairingViewModel.isHosting.collectAsState()
 
     if (!isUserLoggedIn && isLocalMode == false) {
         LoginScreen(
@@ -147,28 +150,14 @@ fun AppNavigation(
                 val uiState by activeTripViewModel.uiState.collectAsState()
                 ActiveTripScreen(
                     uiState = uiState,
+                    isHost = isHosting,
                     onStartTripClick = onStartTripClick,
                     onEndTripClick = onEndTripClick,
                     onStartDiscoveryClick = {
                         navController.navigate("pairing")
                     },
-                    onModeChange = { activeTripViewModel.onModeChange(it) },
-                    onStartCommandChange = { 
-                        activeTripViewModel.onModeChange(OperatingMode.VOICE_COMMAND) // Implicit update?
-                        // TODO: Add specific update method to VM 
-                    },
-                    onStopCommandChange = { 
-                        // TODO: Add specific update method to VM 
-                    },
-                    onRecordingToggle = { /* TODO VM update */ },
                     onConnectToService = { serviceInfo ->
-                        val device = Device(
-                            id = serviceInfo.serviceName,
-                            name = serviceInfo.serviceName,
-                            deviceName = "Android Device",
-                            ip = serviceInfo.host?.hostAddress,
-                            port = serviceInfo.port
-                        )
+                        val device = Device.fromNsdServiceInfo(serviceInfo)
                         onConnectToDevice(device)
                     },
                     onDisconnectClick = onDisconnectClick
@@ -184,7 +173,16 @@ fun AppNavigation(
                 )
             }
             composable(Screen.Settings.route) {
+                val uiState by activeTripViewModel.uiState.collectAsState()
                 SettingsScreen(
+                    operatingMode = uiState.operatingMode,
+                    startCommand = uiState.startCommand,
+                    stopCommand = uiState.stopCommand,
+                    isRecordingTranscript = uiState.isRecordingTranscript,
+                    onModeChange = { activeTripViewModel.onModeChange(it) },
+                    onStartCommandChange = { activeTripViewModel.onStartCommandChange(it) },
+                    onStopCommandChange = { activeTripViewModel.onStopCommandChange(it) },
+                    onRecordingToggle = { activeTripViewModel.onRecordingToggle(it) },
                     onNavigateBack = { navController.popBackStack() },
                     onTestAudio = { showAudioTest = true },
                     onLogout = {
@@ -203,6 +201,7 @@ fun AppNavigation(
                 val tripId = backStackEntry.arguments?.getString("tripId") ?: ""
                 TripDetailScreen(
                     tripId = tripId,
+                    viewModel = tripDetailViewModel,
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
@@ -212,7 +211,6 @@ fun AppNavigation(
                     onNavigateBack = { navController.popBackStack() },
                     onConnectToDevice = { device ->
                         onConnectToDevice(device)
-                        navController.navigate(Screen.ActiveTrip.route)
                     }
                 )
             }

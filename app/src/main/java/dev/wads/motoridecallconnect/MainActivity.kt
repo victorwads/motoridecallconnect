@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     private val activeTripViewModel by viewModels<dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel> { viewModelFactory }
     private val tripHistoryViewModel by viewModels<dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel> { viewModelFactory }
+    private val tripDetailViewModel by viewModels<dev.wads.motoridecallconnect.ui.history.TripDetailViewModel> { viewModelFactory }
     private val loginViewModel by viewModels<dev.wads.motoridecallconnect.ui.login.LoginViewModel> { viewModelFactory }
     private val socialViewModel by viewModels<dev.wads.motoridecallconnect.ui.social.SocialViewModel> { viewModelFactory }
     private val pairingViewModel by viewModels<dev.wads.motoridecallconnect.ui.pairing.PairingViewModel> { viewModelFactory }
@@ -88,18 +89,24 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         lifecycleScope.launch {
             socialRepository.updateMyPublicProfile()
         }
+        
+        // Ensure AudioService is ready for discovery/pairing
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startAndBindAudioService()
+        }
 
         setContent {
             MotoRideCallConnectTheme {
                 val uiState by activeTripViewModel.uiState.collectAsState()
                 val isHosting by pairingViewModel.isHosting.collectAsState()
 
-                LaunchedEffect(uiState.operatingMode, uiState.startCommand, uiState.stopCommand, uiState.isTripActive) {
+                LaunchedEffect(uiState.operatingMode, uiState.startCommand, uiState.stopCommand, uiState.isTripActive, uiState.currentTripId) {
                     audioService?.updateConfiguration(
                         uiState.operatingMode, 
                         uiState.startCommand, 
                         uiState.stopCommand,
-                        uiState.isTripActive
+                        uiState.isTripActive,
+                        uiState.currentTripId
                     )
                 }
 
@@ -112,6 +119,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 AppNavigation(
                     activeTripViewModel = activeTripViewModel,
                     tripHistoryViewModel = tripHistoryViewModel,
+                    tripDetailViewModel = tripDetailViewModel,
                     loginViewModel = loginViewModel,
                     socialViewModel = socialViewModel,
                     pairingViewModel = pairingViewModel,
@@ -128,7 +136,23 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         activeTripViewModel.endTrip()
                     },
                     onConnectToDevice = { device ->
-                        audioService?.connectToPeer(device)
+                        if (audioService == null) {
+                            startAndBindAudioService()
+                            // Service binding is asynchronous. In a real app, we'd queue this or wait.
+                            // For now, let's try calling it, but it might still be null for a few ms.
+                            lifecycleScope.launch {
+                                // Simple retry mechanism to wait for binding
+                                for (i in 1..10) {
+                                    if (audioService != null) {
+                                        audioService?.connectToPeer(device)
+                                        break
+                                    }
+                                    kotlinx.coroutines.delay(100)
+                                }
+                            }
+                        } else {
+                            audioService?.connectToPeer(device)
+                        }
                     },
                     onDisconnectClick = {
                         audioService?.disconnect()
@@ -163,6 +187,25 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: dev.wads.motoridecallconnect.data.model.Device?) {
         runOnUiThread {
             activeTripViewModel.onConnectionStatusChanged(status, peer)
+            pairingViewModel.updateConnectionStatus(status == dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTED)
+        }
+    }
+
+    override fun onTripStatusChanged(isActive: Boolean, tripId: String?) {
+        runOnUiThread {
+            activeTripViewModel.onTripStatusChanged(isActive, tripId)
+        }
+    }
+
+    override fun onModelDownloadProgress(progress: Int) {
+        runOnUiThread {
+//            activeTripViewModel.updateModelDownloadStatus(true, progress)
+        }
+    }
+
+    override fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean?) {
+        runOnUiThread {
+//            activeTripViewModel.updateModelDownloadStatus(isDownloading, if(isDownloading) 0 else 100)
         }
     }
 

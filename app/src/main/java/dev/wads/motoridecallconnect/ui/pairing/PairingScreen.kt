@@ -97,8 +97,10 @@ fun PairingScreen(
                         Switch(
                             checked = isHosting,
                             onCheckedChange = { 
-                                if (it) viewModel.startHosting("Meu Intercom") // Should use real device name
-                                else viewModel.stopHosting()
+                                if (it) {
+                                    val modelName = android.os.Build.MODEL
+                                    viewModel.startHosting(modelName)
+                                } else viewModel.stopHosting()
                             }
                         )
                     }
@@ -208,7 +210,7 @@ fun PairingScreen(
                     onBack = { viewState = PairViewState.List },
                     onConnect = {
                         pairState = PairConnectionState.Connecting
-                        viewModel.connectToDevice(device)
+                        onConnectToDevice(device)
                     }
                 )
                 
@@ -221,7 +223,13 @@ fun PairingScreen(
         }
         
         is PairViewState.Code -> {
-            CodePairView(onBack = { viewState = PairViewState.List })
+            CodePairView(
+                onBack = { viewState = PairViewState.List },
+                onSubmit = { code ->
+                    viewModel.handleScannedCode(code)
+                    viewState = PairViewState.List
+                }
+            )
         }
 
         is PairViewState.Scanner -> {
@@ -252,7 +260,18 @@ fun DeviceItem(device: Device, onClick: () -> Unit) {
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        UserProfileView(userId = device.id, avatarSize = 48)
+        UserProfileView(
+            userId = device.id,
+            avatarSize = 48,
+            fallbackName = device.name
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        Icon(
+            Icons.Default.Wifi,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+            modifier = Modifier.size(16.dp)
+        )
     }
 }
 
@@ -274,7 +293,11 @@ fun DeviceDetailView(
         
         StatusCard(title = stringResource(R.string.pairing_card_title)) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                UserProfileView(userId = device.id, avatarSize = 80)
+                UserProfileView(
+                    userId = device.id,
+                    avatarSize = 80,
+                    fallbackName = device.name
+                )
                 
                 Spacer(modifier = Modifier.height(32.dp))
                 
@@ -293,6 +316,10 @@ fun DeviceDetailView(
                     }
                     PairConnectionState.Connected -> {
                         Text(stringResource(R.string.connected), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        LaunchedEffect(Unit) {
+                            delay(1000)
+                            onBack()
+                        }
                     }
                     else -> {}
                 }
@@ -302,7 +329,10 @@ fun DeviceDetailView(
 }
 
 @Composable
-fun CodePairView(onBack: () -> Unit) {
+fun CodePairView(
+    onBack: () -> Unit,
+    onSubmit: (String) -> Unit
+) {
     var code by remember { mutableStateOf("") }
     
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).padding(top=16.dp)) {
@@ -327,12 +357,13 @@ fun CodePairView(onBack: () -> Unit) {
                     value = code,
                     onValueChange = { code = it },
                     label = { Text(stringResource(R.string.pairing_code_label)) },
+                    placeholder = { Text("motoride://...") },
                     modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                 )
 
                 BigButton(
                     text = stringResource(R.string.connect_devices_action),
-                    onClick = { /* TODO Pair */ },
+                    onClick = { onSubmit(code) },
                     fullWidth = true
                 )
             }

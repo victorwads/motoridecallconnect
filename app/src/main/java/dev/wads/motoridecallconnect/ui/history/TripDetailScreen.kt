@@ -29,6 +29,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -48,28 +51,19 @@ import java.util.Locale
 @Composable
 fun TripDetailScreen(
     tripId: String,
+    viewModel: TripDetailViewModel? = null,
     onNavigateBack: () -> Unit
 ) {
-    // Mock trip data fetch based on ID
-    // In real app, consume ViewModel
-    val trip = Trip(
-        id = tripId,
-        startTime = System.currentTimeMillis() - 3600000,
-        endTime = System.currentTimeMillis(),
-        duration = 3600000,
-        peerDevice = "Galaxy S23 Ultra"
-    )
-    val mockTranscript = listOf(
-        "10:00:00" to "Motor ligado, iniciando",
-        "10:05:00" to "Vira a direita na próxima",
-        "10:05:10" to "Ok, entendi"
-    )
+    LaunchedEffect(tripId) {
+        viewModel?.loadTrip(tripId)
+    }
+
+    val uiState by viewModel?.uiState?.collectAsState() ?: androidx.compose.runtime.mutableStateOf(TripDetailUiState())
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(onClick = onNavigateBack)) {
@@ -78,66 +72,85 @@ fun TripDetailScreen(
             Text(stringResource(R.string.history_title), color = MaterialTheme.colorScheme.primary)
         }
 
-        StatusCard(title = stringResource(R.string.summary_title), icon = Icons.Default.Schedule) {
-            Column {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                     DetailItem(stringResource(R.string.date_label), formatDate(trip.startTime))
-                     DetailItem(stringResource(R.string.duration_label), "01:00:00") // Mock
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                     Column {
-                         Text(text = stringResource(R.string.with_label), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                         UserProfileView(userId = trip.participants.firstOrNull(), showId = false, avatarSize = 24)
-                     }
-                     DetailItem(stringResource(R.string.mode_label), stringResource(R.string.mode_automatic))
-                }
+        if (uiState.isLoading) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                androidx.compose.material3.CircularProgressIndicator()
             }
-        }
-
-        StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                mockTranscript.forEach { (time, text) ->
-                    Row {
-                        Text(
-                            text = "[$time]", 
-                            style = MaterialTheme.typography.bodySmall, 
-                            color = MaterialTheme.colorScheme.primary,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.width(80.dp)
-                        )
-                        Text(text = text, style = MaterialTheme.typography.bodySmall)
+        } else {
+            val trip = uiState.trip
+            if (trip != null) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    StatusCard(title = stringResource(R.string.summary_title), icon = Icons.Default.Schedule) {
+                        Column {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                DetailItem(stringResource(R.string.date_label), formatDate(trip.startTime))
+                                DetailItem(stringResource(R.string.duration_label), formatDuration(trip.duration))
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column {
+                                    Text(text = stringResource(R.string.with_label), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    UserProfileView(userId = trip.participants.firstOrNull(), showId = false, avatarSize = 24)
+                                }
+                                DetailItem(stringResource(R.string.mode_label), stringResource(R.string.mode_automatic))
+                            }
+                        }
                     }
+
+                    StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
+                        if (uiState.transcripts.isEmpty()) {
+                            Text(
+                                text = "Sem registros de transcrição.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                uiState.transcripts.forEach { line ->
+                                    Row {
+                                        Text(
+                                            text = formatTime(line.timestamp), 
+                                            style = MaterialTheme.typography.bodySmall, 
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontFamily = FontFamily.Monospace,
+                                            modifier = Modifier.width(80.dp)
+                                        )
+                                        Text(text = line.text, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    BigButton(
+                        text = "Apagar viagem",
+                        onClick = {},
+                        variant = ButtonVariant.Secondary, // Ghost
+                        icon = Icons.Default.Delete,
+                        fullWidth = true
+                    )
+                }
+            } else {
+                // Not found state
+                 Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Viagem não encontrada.")
                 }
             }
         }
-
-         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-             BigButton(
-                 text = "Exportar",
-                 onClick = {},
-                 variant = ButtonVariant.Outline,
-                 icon = Icons.Default.Download,
-                 fullWidth = false,
-                 modifier = Modifier.weight(1f)
-             )
-             BigButton(
-                 text = "Compartilhar",
-                 onClick = {},
-                 variant = ButtonVariant.Outline,
-                 icon = Icons.Default.Share,
-                 fullWidth = false,
-                 modifier = Modifier.weight(1f)
-             )
-         }
-         
-         BigButton(
-             text = "Apagar viagem",
-             onClick = {},
-             variant = ButtonVariant.Secondary, // Ghost
-             icon = Icons.Default.Delete,
-             fullWidth = true
-         )
     }
 }
 
@@ -152,6 +165,22 @@ fun DetailItem(label: String, value: String) {
 private fun formatDate(timestamp: Long): String {
     val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
     return sdf.format(Date(timestamp))
+}
+
+private fun formatTime(timestamp: Long): String {
+    val sdf = SimpleDateFormat("[HH:mm:ss]", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
+
+private fun formatDuration(durationMillis: Long?): String {
+    if (durationMillis == null) return "Em andamento"
+    val seconds = durationMillis / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+    if (hours > 0) {
+        return String.format("%dh %02dm", hours, minutes % 60)
+    }
+    return String.format("%02dm %02ds", minutes, seconds % 60)
 }
 
 @androidx.compose.ui.tooling.preview.Preview

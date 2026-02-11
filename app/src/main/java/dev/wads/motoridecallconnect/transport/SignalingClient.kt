@@ -22,6 +22,7 @@ class SignalingClient(private val listener: SignalingListener) {
         fun onOfferReceived(description: String)
         fun onAnswerReceived(description: String)
         fun onIceCandidateReceived(candidate: String)
+        fun onTripStatusReceived(active: Boolean, tripId: String? = null)
     }
 
     fun startServer(port: Int) {
@@ -68,6 +69,11 @@ class SignalingClient(private val listener: SignalingListener) {
                     message.startsWith("OFFER:") -> listener.onOfferReceived(message.substringAfter("OFFER:"))
                     message.startsWith("ANSWER:") -> listener.onAnswerReceived(message.substringAfter("ANSWER:"))
                     message.startsWith("ICE:") -> listener.onIceCandidateReceived(message.substringAfter("ICE:"))
+                    message.startsWith("TRIP:START") -> {
+                        val tripId = message.substringAfter("TRIP:START:").takeIf { it != message }
+                        listener.onTripStatusReceived(true, tripId)
+                    }
+                    message.startsWith("TRIP:STOP") -> listener.onTripStatusReceived(false)
                 }
                 Log.d(TAG, "Received message: $message")
             }

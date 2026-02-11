@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ import dev.wads.motoridecallconnect.ui.components.BadgeStatus
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
+import dev.wads.motoridecallconnect.ui.components.ChronometerView
 import dev.wads.motoridecallconnect.ui.components.StatusBadge
 import dev.wads.motoridecallconnect.ui.components.StatusCard
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
@@ -48,13 +50,10 @@ import dev.wads.motoridecallconnect.ui.components.UserProfileView
 @Composable
 fun ActiveTripScreen(
     uiState: ActiveTripUiState,
+    isHost: Boolean,
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onStartDiscoveryClick: () -> Unit,
-    onModeChange: (OperatingMode) -> Unit,
-    onStartCommandChange: (String) -> Unit,
-    onStopCommandChange: (String) -> Unit,
-    onRecordingToggle: (Boolean) -> Unit,
     onConnectToService: (NsdServiceInfo) -> Unit = {},
     onDisconnectClick: () -> Unit = {}
 ) {
@@ -98,7 +97,7 @@ fun ActiveTripScreen(
                     fontWeight = FontWeight.Bold
                 )
             }
-            if (uiState.connectionStatus == ConnectionStatus.CONNECTED) {
+            if (uiState.connectionStatus == ConnectionStatus.CONNECTED && uiState.isTripActive) {
                 Text(
                     text = stringResource(R.string.live_indicator),
                     color = Color(0xFF22C55E), // SuccessGreen
@@ -108,18 +107,55 @@ fun ActiveTripScreen(
             }
         }
 
-        // --- Connection Status ---
+        if (uiState.isModelDownloading) {
+            androidx.compose.material3.Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        stringResource(R.string.downloading_model),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { uiState.modelDownloadProgress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "${uiState.modelDownloadProgress}%", 
+                        style = MaterialTheme.typography.bodySmall, 
+                        modifier = Modifier.align(Alignment.End)
+                    )
+                }
+            }
+        }
+
+        // --- Connection Status (Smaller) ---
         StatusCard(title = stringResource(R.string.connection_header), icon = Icons.Default.Share) { // Placeholder for Link2
-            Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusBadge(status = badgeStatus, label = connectionStatusLabel)
-                
-                if (uiState.connectedPeer != null && (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONNECTING)) {
-                    Spacer(modifier = Modifier.width(12.dp))
-                    UserProfileView(userId = uiState.connectedPeer.id)
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    StatusBadge(status = badgeStatus, label = connectionStatusLabel)
+                    
+                    if (uiState.connectedPeer != null && (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONNECTING)) {
+                        Spacer(modifier = Modifier.width(12.dp))
+                        UserProfileView(
+                            userId = uiState.connectedPeer.id,
+                            fallbackName = uiState.connectedPeer.name,
+                            avatarSize = 32,
+                            showId = false
+                        )
+                    }
+                }
+
+                if (badgeStatus == BadgeStatus.Connected || badgeStatus == BadgeStatus.Connecting) {
+                    TextButton(onClick = onDisconnectClick) {
+                        Text(stringResource(R.string.disconnect), color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
 
             if (badgeStatus == BadgeStatus.Disconnected) {
+                Spacer(modifier = Modifier.height(12.dp))
                 BigButton(
                     text = stringResource(R.string.pair_now),
                     onClick = onStartDiscoveryClick,
@@ -145,103 +181,82 @@ fun ActiveTripScreen(
                         }
                     }
                 }
-                
-            } else if (badgeStatus == BadgeStatus.Connected || badgeStatus == BadgeStatus.Connecting) {
-                 BigButton(
-                    text = stringResource(R.string.disconnect),
-                    onClick = onDisconnectClick,
-                    variant = ButtonVariant.Destructive,
-                    fullWidth = true
-                 )
             }
         }
 
         // --- Trip Controls ---
-        StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
-            // Timer UI would be here
-            
-            if (uiState.isTripActive) {
-                 BigButton(
-                    text = stringResource(R.string.end_trip_action),
-                    onClick = onEndTripClick,
-                    variant = ButtonVariant.Destructive,
-                    icon = Icons.Default.Stop,
-                    size = ButtonSize.Xl,
-                    fullWidth = true
-                 )
-            } else {
-                 BigButton(
-                    text = stringResource(R.string.start_trip_action),
-                    onClick = onStartTripClick,
-                    variant = ButtonVariant.Success,
-                    icon = Icons.Default.PlayArrow,
-                    size = ButtonSize.Xl,
-                    fullWidth = true
-                 )
-            }
-        }
-
-        // --- Configuration ---
-        StatusCard(title = stringResource(R.string.config_header), icon = Icons.Default.Settings) {
-            Text(stringResource(R.string.operation_mode_header), style = MaterialTheme.typography.titleSmall)
-            
-            OperatingMode.values().forEach { mode ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .selectable(
-                            selected = (uiState.operatingMode == mode),
-                            onClick = { onModeChange(mode) }
+        val canStartTrip = uiState.connectionStatus != ConnectionStatus.CONNECTED || isHost
+        
+        if (canStartTrip || uiState.isTripActive) {
+            StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
+                if (uiState.isTripActive) {
+                     Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                     ) {
+                        uiState.tripStartTime?.let {
+                            ChronometerView(startTimeMillis = it)
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                        BigButton(
+                            text = stringResource(R.string.end_trip_action),
+                            onClick = onEndTripClick,
+                            variant = ButtonVariant.Destructive,
+                            icon = Icons.Default.Stop,
+                            size = ButtonSize.Xl,
+                            fullWidth = true
                         )
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = (uiState.operatingMode == mode),
-                        onClick = { onModeChange(mode) }
-                    )
-                    val modeText = when(mode) {
-                        OperatingMode.VOICE_COMMAND -> stringResource(R.string.mode_voice_command)
-                        OperatingMode.VOICE_ACTIVITY_DETECTION -> stringResource(R.string.mode_vad)
-                        OperatingMode.CONTINUOUS_TRANSMISSION -> stringResource(R.string.mode_continuous)
-                    }
-                    Text(text = modeText)
+                     }
+                } else {
+                     BigButton(
+                        text = stringResource(R.string.start_trip_action),
+                        onClick = onStartTripClick,
+                        variant = ButtonVariant.Success,
+                        icon = Icons.Default.PlayArrow,
+                        size = ButtonSize.Xl,
+                        fullWidth = true
+                     )
                 }
             }
-
-            if (uiState.operatingMode == OperatingMode.VOICE_COMMAND) {
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = uiState.startCommand,
-                    onValueChange = onStartCommandChange,
-                    label = { Text(stringResource(R.string.start_command_label)) },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = uiState.stopCommand,
-                    onValueChange = onStopCommandChange,
-                    label = { Text(stringResource(R.string.stop_command_label)) },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.record_transcript_label))
-                Spacer(modifier = Modifier.weight(1f))
-                Switch(
-                    checked = uiState.isRecordingTranscript, 
-                    onCheckedChange = onRecordingToggle
-                )
+        } else if (uiState.connectionStatus == ConnectionStatus.CONNECTED && !isHost) {
+            StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
+                if (uiState.isTripActive) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        uiState.tripStartTime?.let {
+                            ChronometerView(startTimeMillis = it)
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        Text(
+                            text = "Trip ativa (Sincronizado com Host)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Aguardando o host iniciar a trip...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
-        // --- Transcript List ---
-        if (uiState.transcript.isNotEmpty()) {
+        // --- Transcription List ---
+        if (uiState.isTripActive || uiState.transcript.isNotEmpty()) {
             StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    uiState.transcript.takeLast(5).forEach { line ->
+                    if (uiState.transcript.isEmpty()) {
+                        Text(
+                            text = "Aguardando falas...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    uiState.transcript.takeLast(10).forEach { line ->
                         Text(
                             text = line,
                             style = MaterialTheme.typography.bodyMedium,
@@ -267,13 +282,10 @@ private fun ActiveTripScreenPreview() {
                     discoveredServices = emptyList(),
                     transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
                 ),
+                isHost = true,
                 onStartTripClick = {},
                 onEndTripClick = {},
-                onStartDiscoveryClick = {},
-                onModeChange = {},
-                onStartCommandChange = {},
-                onStopCommandChange = {},
-                onRecordingToggle = {}
+                onStartDiscoveryClick = {}
             )
         }
     }

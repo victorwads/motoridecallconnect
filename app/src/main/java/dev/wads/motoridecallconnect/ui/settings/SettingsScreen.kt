@@ -19,12 +19,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -52,8 +53,21 @@ import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
+
 @Composable
 fun SettingsScreen(
+    operatingMode: OperatingMode,
+    startCommand: String,
+    stopCommand: String,
+    isRecordingTranscript: Boolean,
+    onModeChange: (OperatingMode) -> Unit,
+    onStartCommandChange: (String) -> Unit,
+    onStopCommandChange: (String) -> Unit,
+    onRecordingToggle: (Boolean) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
@@ -94,8 +108,64 @@ fun SettingsScreen(
             }
         }
 
+        // --- Configuration (Moved from Home) ---
+        StatusCard(title = stringResource(R.string.config_header), icon = Icons.Default.Settings) {
+            Text(stringResource(R.string.operation_mode_header), style = MaterialTheme.typography.titleSmall)
+            
+            OperatingMode.entries.forEach { mode ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = (operatingMode == mode),
+                            onClick = { onModeChange(mode) }
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = (operatingMode == mode),
+                        onClick = { onModeChange(mode) }
+                    )
+                    val modeText = when(mode) {
+                        OperatingMode.VOICE_COMMAND -> stringResource(R.string.mode_voice_command)
+                        OperatingMode.VOICE_ACTIVITY_DETECTION -> stringResource(R.string.mode_vad)
+                        OperatingMode.CONTINUOUS_TRANSMISSION -> stringResource(R.string.mode_continuous)
+                    }
+                    Text(text = modeText)
+                }
+            }
+
+            if (operatingMode == OperatingMode.VOICE_COMMAND) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = startCommand,
+                    onValueChange = onStartCommandChange,
+                    label = { Text(stringResource(R.string.start_command_label)) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = stopCommand,
+                    onValueChange = onStopCommandChange,
+                    label = { Text(stringResource(R.string.stop_command_label)) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.record_transcript_label))
+                Spacer(modifier = Modifier.weight(1f))
+                Switch(
+                    checked = isRecordingTranscript, 
+                    onCheckedChange = onRecordingToggle
+                )
+            }
+        }
+
         // Audio Section
-        StatusCard(title = stringResource(R.string.audio_section), icon = Icons.Default.VolumeUp) {
+        StatusCard(title = stringResource(R.string.audio_section), icon = Icons.AutoMirrored.Filled.VolumeUp) {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -194,7 +264,19 @@ fun SettingsScreen(
 private fun SettingsScreenPreview() {
     dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
         androidx.compose.material3.Surface {
-            SettingsScreen(onTestAudio = {}, onNavigateBack = {}, onLogout = {})
+            SettingsScreen(
+                operatingMode = OperatingMode.VOICE_COMMAND,
+                startCommand = "iniciar",
+                stopCommand = "parar",
+                isRecordingTranscript = true,
+                onModeChange = {},
+                onStartCommandChange = {},
+                onStopCommandChange = {},
+                onRecordingToggle = {},
+                onTestAudio = {},
+                onNavigateBack = {},
+                onLogout = {}
+            )
         }
     }
 }

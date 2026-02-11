@@ -34,7 +34,8 @@ fun UserProfileView(
     userId: String?,
     modifier: Modifier = Modifier,
     showId: Boolean = true,
-    avatarSize: Int = 40
+    avatarSize: Int = 40,
+    fallbackName: String? = null
 ) {
     var profile by remember(userId) { mutableStateOf<UserProfile?>(null) }
     var isLoading by remember(userId) { mutableStateOf(userId != null) }
@@ -83,6 +84,7 @@ fun UserProfileView(
             val name = when {
                 isLoading -> "Carregando..."
                 profile != null -> profile?.displayName?.ifEmpty { "Sem Nome" } ?: "Sem Nome"
+                fallbackName != null -> fallbackName
                 userId == null -> "Ninguém"
                 else -> "Usuário não encontrado"
             }

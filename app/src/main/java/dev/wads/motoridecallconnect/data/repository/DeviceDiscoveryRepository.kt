@@ -32,13 +32,7 @@ class DeviceDiscoveryRepository(context: Context) : NsdHelper.NsdListener {
     }
 
     override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-        val device = Device(
-            id = serviceInfo.serviceName,
-            name = serviceInfo.serviceName,
-            deviceName = "Android Device", // Could be refined
-            ip = serviceInfo.host?.hostAddress,
-            port = serviceInfo.port
-        )
+        val device = Device.fromNsdServiceInfo(serviceInfo)
         if (!_discoveredDevices.value.any { it.id == device.id }) {
             _discoveredDevices.value = _discoveredDevices.value + device
         }

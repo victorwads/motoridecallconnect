@@ -6,6 +6,7 @@ import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
 import dev.wads.motoridecallconnect.data.repository.SocialRepository
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel
+import dev.wads.motoridecallconnect.ui.history.TripDetailViewModel
 import dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel
 import dev.wads.motoridecallconnect.ui.login.LoginViewModel
 import dev.wads.motoridecallconnect.ui.pairing.PairingViewModel
@@ -24,6 +25,10 @@ class ViewModelFactory(
         if (modelClass.isAssignableFrom(TripHistoryViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
             return TripHistoryViewModel(repository) as T
+        }
+        if (modelClass.isAssignableFrom(TripDetailViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return TripDetailViewModel(repository) as T
         }
         if (modelClass.isAssignableFrom(LoginViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")

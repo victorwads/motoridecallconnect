@@ -50,12 +50,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isTransmitting = false
     private var isTripActive = false
     private var connectedPeer: Device? = null
+    private var connectionStatus = ConnectionStatus.DISCONNECTED
     private val audioBuffer = mutableListOf<Byte>()
     private var lastTransmissionTime = 0L
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
         fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
+        fun onTripStatusChanged(isActive: Boolean, tripId: String? = null)
+        fun onModelDownloadProgress(progress: Int)
+        fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
     }
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
@@ -65,7 +69,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         override fun onDataChannel(p0: DataChannel?) {}
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             Log.d("AudioService", "IceConnectionChange: $state")
-            val status = when (state) {
+            connectionStatus = when (state) {
                 PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> 
                     ConnectionStatus.CONNECTED
                 PeerConnection.IceConnectionState.CHECKING -> 
@@ -74,7 +78,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     ConnectionStatus.DISCONNECTED
                 else -> ConnectionStatus.DISCONNECTED
             }
-            callback?.onConnectionStatusChanged(status, connectedPeer)
+            callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         }
         override fun onIceConnectionReceivingChange(p0: Boolean) {}
         override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
@@ -128,11 +132,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     fun registerCallback(callback: ServiceCallback) {
         this.callback = callback
+        // Update immediately with current state
+        callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
     }
 
     fun connectToPeer(device: Device) {
         connectedPeer = device
-        callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTING, device)
+        connectionStatus = ConnectionStatus.CONNECTING
+        callback?.onConnectionStatusChanged(connectionStatus, device)
         if (device.ip != null && device.port != null) {
             signalingClient.connectToPeer(InetAddress.getByName(device.ip), device.port)
         }
@@ -145,15 +152,23 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         connectedPeer = null
-        callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.DISCONNECTED, null)
+        connectionStatus = ConnectionStatus.DISCONNECTED
+        callback?.onConnectionStatusChanged(connectionStatus, null)
         signalingClient.startServer(8080)
     }
 
-    fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean) {
+    fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean, tripId: String? = null) {
+        val tripChanged = isTripActive != tripActive
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
         isTripActive = tripActive
+
+        if (tripChanged) {
+            val msg = if (isTripActive) "TRIP:START${if (tripId != null) ":$tripId" else ""}" else "TRIP:STOP"
+            signalingClient.sendMessage(msg)
+        }
+
         Log.d("AudioService", "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
         
         if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
@@ -170,6 +185,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     // --- SignalingListener Callbacks ---
     override fun onPeerConnected() {
         Log.d("AudioService", "Peer connected, sending name and creating offer")
+        connectionStatus = ConnectionStatus.CONNECTING
+        callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         signalingClient.sendMessage("NAME:${Build.MODEL}")
         webRtcClient.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
@@ -235,6 +252,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
+    override fun onTripStatusReceived(active: Boolean, tripId: String?) {
+        Log.d("AudioService", "Trip status received: $active, id=$tripId")
+        isTripActive = active
+        callback?.onTripStatusChanged(active, tripId)
+    }
+
     // --- AudioCapturerListener Callbacks ---
     override fun onAudioData(data: ByteArray, size: Int) {
         val currentData = data.sliceArray(0 until size)
@@ -290,14 +313,17 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     override fun onModelDownloadStarted() {
         Log.i("AudioService", "Model download started")
+        callback?.onModelDownloadStateChanged(true)
     }
 
     override fun onModelDownloadProgress(progress: Int) {
-        Log.d("AudioService", "Model download progress: $progress%")
+        // Log.d("AudioService", "Model download progress: $progress%") // Too noisy
+        callback?.onModelDownloadProgress(progress)
     }
 
     override fun onModelDownloadFinished(success: Boolean) {
-        Log.i("AudioService", "Model download finished: Success=$success")
+        Log.i("AudioService", "Model download finished. Success: $success")
+        callback?.onModelDownloadStateChanged(false, success)
     }
 
     override fun onError(error: String) {

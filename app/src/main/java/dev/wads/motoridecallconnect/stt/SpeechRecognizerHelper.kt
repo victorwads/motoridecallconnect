@@ -7,6 +7,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import android.widget.Toast
 import java.io.File
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +16,7 @@ import kotlinx.coroutines.withContext
 class SpeechRecognizerHelper(private val context: Context, private val listener: SpeechRecognitionListener) {
 
     private var speechRecognizer: SpeechRecognizer? = null
-    private val whisperLib = WhisperLib()
+    private val whisperEngine = WhisperEngine(context)
     var isUsingWhisper = false
         private set
 
@@ -39,11 +40,16 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     private fun checkAndInitWhisper() {
         if (modelFile.exists()) {
             try {
-                whisperLib.initialize(context, modelName)
-                isUsingWhisper = true
-                Log.i("SpeechRecognizerHelper", "Whisper initialized successfully.")
-            } catch (e: Exception) {
+                if (whisperEngine.initialize(modelFile.absolutePath)) {
+                    isUsingWhisper = true
+                    Log.i("SpeechRecognizerHelper", "Whisper initialized successfully.")
+                } else {
+                    Log.e("SpeechRecognizerHelper", "Failed to initialize Whisper engine logic.")
+                    setupSystemRecognizer()
+                }
+            } catch (e: Throwable) {
                 Log.e("SpeechRecognizerHelper", "Failed to initialize Whisper", e)
+                Toast.makeText(context, "Erro ao inicializar Whisper: ${e.message}", Toast.LENGTH_LONG).show()
                 setupSystemRecognizer()
             }
         } else {
@@ -137,7 +143,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
                 floatData[i] = sample.toFloat() / 32768.0f
             }
             
-            val result = whisperLib.transcribe(floatData)
+            val result = whisperEngine.transcribeBuffer(floatData)
             if (result.isNotBlank()) {
                 listener.onFinalResults(result)
             }
@@ -146,7 +152,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
 
     fun destroy() {
         speechRecognizer?.destroy()
-        whisperLib.release()
+        whisperEngine.free()
     }
 
     private fun createRecognitionListener(): RecognitionListener {

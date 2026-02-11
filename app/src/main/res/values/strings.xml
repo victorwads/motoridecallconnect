@@ -152,4 +152,5 @@
     <string name="scan_qr_code">Scan QR Code</string>
     <string name="stop_hosting">Stop Hosting</string>
     <string name="start_hosting">Start Hosting</string>
+    <string name="downloading_model">Downloading AI Model...</string>
 </resources>

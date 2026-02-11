@@ -2,6 +2,7 @@ package dev.wads.motoridecallconnect.ui.pairing
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
 import dev.wads.motoridecallconnect.utils.NetworkUtils
@@ -33,10 +34,12 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
 
     fun startHosting(deviceName: String, port: Int = 8080) {
         _isHosting.value = true
-        repository.registerService(port, deviceName)
+        val userId = FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
+        val registrationName = "$userId|$deviceName"
+        repository.registerService(port, registrationName)
         val ip = NetworkUtils.getLocalIpAddress()
         if (ip != null) {
-            _qrCodeText.value = "motoride://$ip:$port/$deviceName"
+            _qrCodeText.value = "motoride://$ip:$port/$registrationName"
         }
     }
 
@@ -46,14 +49,16 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
         repository.unregisterService()
     }
 
+    fun updateConnectionStatus(connected: Boolean) {
+        _isConnected.value = connected
+    }
+
     fun connectToDevice(device: Device) {
-        // Logic to connect via AudioService will be handled in the UI 
-        // by starting the service or calling a method on it.
-        _isConnected.value = true
+        // Handled via onConnectToDevice callback and AudioService status updates
     }
 
     fun handleScannedCode(code: String) {
-        // Expected format: motoride://ip:port/name
+        // Expected format: motoride://ip:port/userId|deviceName
         if (code.startsWith("motoride://")) {
             val parts = code.removePrefix("motoride://").split("/")
             if (parts.isNotEmpty()) {
@@ -61,8 +66,13 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
                 if (addressParts.size == 2) {
                     val ip = addressParts[0]
                     val port = addressParts[1].toIntOrNull() ?: 8080
-                    val name = if (parts.size > 1) parts[1] else "Unknown"
-                    connectToDevice(Device(id = name, name = name, deviceName = name, ip = ip, port = port))
+                    val rawName = if (parts.size > 1) parts[1] else "Unknown"
+                    
+                    val nameParts = rawName.split("|")
+                    val userId = nameParts.getOrNull(0) ?: rawName
+                    val displayName = nameParts.getOrNull(1) ?: rawName
+                    
+                    connectToDevice(Device(id = userId, name = displayName, deviceName = displayName, ip = ip, port = port))
                 }
             }
         }

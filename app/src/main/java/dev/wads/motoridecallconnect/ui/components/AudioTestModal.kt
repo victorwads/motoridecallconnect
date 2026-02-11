@@ -14,10 +14,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -149,7 +149,7 @@ fun AudioTestModal(
                     text = "Reproduzir teste de som",
                     onClick = { /* TODO play sound */ },
                     variant = ButtonVariant.Secondary,
-                    icon = Icons.Default.VolumeUp
+                    icon = Icons.AutoMirrored.Filled.VolumeUp
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
