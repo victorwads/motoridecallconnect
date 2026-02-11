@@ -12,7 +12,7 @@ class AudioCapturer(private val listener: AudioCapturerListener) {
 
     private var audioRecord: AudioRecord? = null
     private var isCapturing = false
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var executor: ExecutorService = Executors.newSingleThreadExecutor()
     private var minBufferSize = 0
 
     interface AudioCapturerListener {
@@ -28,6 +28,14 @@ class AudioCapturer(private val listener: AudioCapturerListener) {
 
     @SuppressLint("MissingPermission")
     fun startCapture() {
+        if (isCapturing) {
+            Log.d(TAG, "Audio capture already running. Ignoring start request.")
+            return
+        }
+        if (executor.isShutdown) {
+            executor = Executors.newSingleThreadExecutor()
+        }
+
         minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         if (minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
             Log.e(TAG, "Invalid AudioRecord parameters.")
@@ -55,12 +63,19 @@ class AudioCapturer(private val listener: AudioCapturerListener) {
     }
 
     fun stopCapture() {
+        if (!isCapturing && audioRecord == null) {
+            return
+        }
         isCapturing = false
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
-        executor.shutdown()
         Log.d(TAG, "Audio capture stopped.")
+    }
+
+    fun shutdown() {
+        stopCapture()
+        executor.shutdownNow()
     }
 
     private fun readAudioData() {

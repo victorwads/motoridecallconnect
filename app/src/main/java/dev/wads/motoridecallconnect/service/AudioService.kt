@@ -48,7 +48,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private val binder = LocalBinder()
     private val CHANNEL_ID = "AudioServiceChannel"
     private lateinit var audioCapturer: AudioCapturer
-    private lateinit var speechRecognizerHelper: SpeechRecognizerHelper
+    private var speechRecognizerHelper: SpeechRecognizerHelper? = null
     private lateinit var signalingClient: SignalingClient
     private lateinit var audioManager: AudioManager
     private lateinit var vad: SimpleVad
@@ -75,6 +75,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var bufferedAudioDurationMs = 0L
     private var consecutiveSilenceDurationMs = 0L
     private var chunkHadSpeech = false
+    private var isAudioCaptureRunning = false
+    private var isHostingEnabled = false
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -122,22 +124,19 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         vad = SimpleVad()
         audioCapturer = AudioCapturer(this)
-        speechRecognizerHelper = SpeechRecognizerHelper(this, this)
         signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
-        Log.i(TAG, "Service created. WhisperAvailable=${speechRecognizerHelper.isUsingWhisper}")
+        Log.i(TAG, "Service created. Idle until connect/host/trip events.")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         val notification = createNotification()
         startForeground(1, notification)
-        audioCapturer.startCapture()
-        signalingClient.startServer(8080) 
         Log.i(
             TAG,
-            "Service started. Mode=$currentMode, TripActive=$isTripActive, Whisper=${speechRecognizerHelper.isUsingWhisper}. " +
-                "Whisper will start only when trip becomes active."
+            "Service started. Mode=$currentMode, TripActive=$isTripActive, " +
+                "AudioCaptureRunning=$isAudioCaptureRunning, HostingEnabled=$isHostingEnabled."
         )
         return START_STICKY
     }
@@ -147,13 +146,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     override fun onDestroy() {
         super.onDestroy()
         releaseAudioDucking()
-        audioCapturer.stopCapture()
+        stopAudioCaptureIfNeeded(reason = "service_destroy")
         flushTranscriptionBuffer(force = true, reason = "service_destroy")
         transcriptionExecutor.shutdown()
         if (!transcriptionExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
             transcriptionExecutor.shutdownNow()
         }
-        speechRecognizerHelper.destroy()
+        speechRecognizerHelper?.destroy()
+        speechRecognizerHelper = null
+        audioCapturer.shutdown()
         signalingClient.close()
     }
 
@@ -164,24 +165,54 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     fun connectToPeer(device: Device) {
+        if (isHostingEnabled) {
+            setHostingEnabled(false)
+        }
+        resetSignalingClient(startServer = false)
         connectedPeer = device
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, device)
         if (device.ip != null && device.port != null) {
-            signalingClient.connectToPeer(InetAddress.getByName(device.ip), device.port)
+            try {
+                signalingClient.connectToPeer(InetAddress.getByName(device.ip), device.port)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to resolve/connect peer ${device.ip}:${device.port}", t)
+                connectionStatus = ConnectionStatus.ERROR
+                callback?.onConnectionStatusChanged(connectionStatus, device)
+                restartSignalingServer()
+            }
+        } else {
+            Log.e(TAG, "Selected device has no IP/port: $device")
+            connectionStatus = ConnectionStatus.ERROR
+            callback?.onConnectionStatusChanged(connectionStatus, device)
+            restartSignalingServer()
         }
     }
 
     fun disconnect() {
-        signalingClient.close()
+        resetSignalingClient(startServer = isHostingEnabled)
         webRtcClient.close()
         // Re-initialize for next potential connection
-        signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         connectedPeer = null
         connectionStatus = ConnectionStatus.DISCONNECTED
         callback?.onConnectionStatusChanged(connectionStatus, null)
-        signalingClient.startServer(8080)
+    }
+
+    fun setHostingEnabled(enabled: Boolean) {
+        if (isHostingEnabled == enabled) {
+            return
+        }
+        isHostingEnabled = enabled
+        if (enabled) {
+            resetSignalingClient(startServer = true)
+            Log.i(TAG, "Hosting enabled: signaling server started.")
+        } else {
+            if (connectionStatus == ConnectionStatus.DISCONNECTED) {
+                resetSignalingClient(startServer = false)
+            }
+            Log.i(TAG, "Hosting disabled.")
+        }
     }
 
     fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean, tripId: String? = null) {
@@ -193,15 +224,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         isTripActive = tripActive
 
         if (tripChanged && wasTripActive && !tripActive) {
+            stopAudioCaptureIfNeeded(reason = "trip_end")
             flushTranscriptionBuffer(force = true, reason = "trip_end")
-            speechRecognizerHelper.stopListening()
+            speechRecognizerHelper?.stopListening()
         }
         if (tripChanged && tripActive) {
             resetTranscriptionState(clearAudio = true)
+            startAudioCaptureIfNeeded()
             lifecycleScope.launch {
-                speechRecognizerHelper.downloadModelIfNeeded()
+                val recognizer = getOrCreateSpeechRecognizerHelper()
+                recognizer.downloadModelIfNeeded()
                 if (isTripActive) {
-                    speechRecognizerHelper.startListening()
+                    recognizer.startListening()
                 }
             }
         }
@@ -296,6 +330,20 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.i(TAG, "Ignoring remote trip status (decoupled from connection). active=$active, id=$tripId")
     }
 
+    override fun onPeerDisconnected() {
+        Log.w(TAG, "Signaling peer disconnected")
+        connectionStatus = ConnectionStatus.DISCONNECTED
+        callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+        restartSignalingServer()
+    }
+
+    override fun onSignalingError(error: Throwable) {
+        Log.e(TAG, "Signaling error", error)
+        connectionStatus = ConnectionStatus.ERROR
+        callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+        restartSignalingServer()
+    }
+
     // --- AudioCapturerListener Callbacks ---
     override fun onAudioData(data: ByteArray, size: Int) {
         if (size <= 0) {
@@ -314,7 +362,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "Audio pipeline heartbeat: frames=$totalFramesReceived, " +
                     "bufferedBytes=${audioBuffer.size}, bufferedMs=$bufferedAudioDurationMs, " +
                     "silenceMs=$consecutiveSilenceDurationMs, tripActive=$isTripActive, " +
-                    "mode=$currentMode, whisper=${speechRecognizerHelper.isUsingWhisper}, transmitting=$isTransmitting"
+                    "mode=$currentMode, whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}, " +
+                    "transmitting=$isTransmitting"
             )
         }
         
@@ -398,7 +447,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onModelDownloadFinished(success: Boolean) {
-        Log.i(TAG, "Model download finished. Success: $success. Whisper=${speechRecognizerHelper.isUsingWhisper}")
+        Log.i(TAG, "Model download finished. Success: $success. Whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}")
         callback?.onModelDownloadStateChanged(false, success)
     }
 
@@ -512,12 +561,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             TAG,
             "Dispatching chunk #$chunkId to STT. bytes=${chunk.size}, durationMs=$chunkDurationMs, " +
                 "silenceMs=$silenceMs, hadSpeech=$hadSpeech, reason=$reason, " +
-                "whisper=${speechRecognizerHelper.isUsingWhisper}"
+                "whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}"
         )
+
+        val recognizer = speechRecognizerHelper
+        if (recognizer == null) {
+            Log.w(TAG, "Dropping STT chunk #$chunkId because recognizer is not initialized.")
+            return
+        }
 
         transcriptionExecutor.execute {
             try {
-                speechRecognizerHelper.processAudio(chunk)
+                recognizer.processAudio(chunk)
             } catch (t: Throwable) {
                 Log.e(TAG, "STT chunk #$chunkId failed", t)
             }
@@ -537,5 +592,45 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         bufferedAudioDurationMs = 0L
         consecutiveSilenceDurationMs = 0L
         chunkHadSpeech = false
+    }
+
+    private fun restartSignalingServer() {
+        resetSignalingClient(startServer = isHostingEnabled)
+    }
+
+    private fun resetSignalingClient(startServer: Boolean) {
+        signalingClient.close()
+        signalingClient = SignalingClient(this)
+        if (startServer) {
+            signalingClient.startServer(8080)
+        }
+    }
+
+    private fun getOrCreateSpeechRecognizerHelper(): SpeechRecognizerHelper {
+        val current = speechRecognizerHelper
+        if (current != null) {
+            return current
+        }
+        return SpeechRecognizerHelper(this, this).also { created ->
+            speechRecognizerHelper = created
+        }
+    }
+
+    private fun startAudioCaptureIfNeeded() {
+        if (isAudioCaptureRunning) {
+            return
+        }
+        audioCapturer.startCapture()
+        isAudioCaptureRunning = true
+        Log.i(TAG, "Audio capture started for active trip.")
+    }
+
+    private fun stopAudioCaptureIfNeeded(reason: String) {
+        if (!isAudioCaptureRunning) {
+            return
+        }
+        audioCapturer.stopCapture()
+        isAudioCaptureRunning = false
+        Log.i(TAG, "Audio capture stopped. reason=$reason")
     }
 }

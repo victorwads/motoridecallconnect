@@ -32,6 +32,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     private var audioService: AudioService? = null
     private var isBound = false
+    private var isBindingService = false
+    private val pendingServiceActions = mutableListOf<(AudioService) -> Unit>()
 
     private val database by lazy {
         Room.databaseBuilder(
@@ -58,6 +60,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
             val boundService = binder.getService()
             audioService = boundService
             isBound = true
+            isBindingService = false
             boundService.registerCallback(this@MainActivity)
             
             // Sync current state to newly connected service
@@ -67,13 +70,22 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 settingsState.operatingMode,
                 settingsState.startCommand,
                 settingsState.stopCommand,
+                settingsState.whisperModelId,
                 tripState.isTripActive,
                 tripState.currentTripId
             )
+            boundService.setHostingEnabled(pairingViewModel.isHosting.value)
+
+            if (pendingServiceActions.isNotEmpty()) {
+                val actions = pendingServiceActions.toList()
+                pendingServiceActions.clear()
+                actions.forEach { action -> action(boundService) }
+            }
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
             isBound = false
+            isBindingService = false
             audioService = null
         }
     }
@@ -83,6 +95,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     ) { isGranted: Boolean ->
         if (isGranted) {
             startAndBindAudioService()
+        } else {
+            pendingServiceActions.clear()
         }
     }
 
@@ -93,11 +107,6 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
             socialRepository.updateMyPublicProfile()
         }
         
-        // Ensure AudioService is ready for discovery/pairing
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            startAndBindAudioService()
-        }
-
         setContent {
             MotoRideCallConnectTheme {
                 val tripState by activeTripViewModel.uiState.collectAsState()
@@ -108,6 +117,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     settingsState.operatingMode,
                     settingsState.startCommand,
                     settingsState.stopCommand,
+                    settingsState.whisperModelId,
                     tripState.isTripActive,
                     tripState.currentTripId
                 ) {
@@ -115,6 +125,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         settingsState.operatingMode, 
                         settingsState.startCommand, 
                         settingsState.stopCommand,
+                        settingsState.whisperModelId,
                         tripState.isTripActive,
                         tripState.currentTripId
                     )
@@ -122,7 +133,11 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
                 LaunchedEffect(isHosting) {
                     if (isHosting) {
-                        requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        ensureAudioServiceReady { service ->
+                            service.setHostingEnabled(true)
+                        }
+                    } else {
+                        audioService?.setHostingEnabled(false)
                     }
                 }
 
@@ -136,27 +151,24 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     settingsViewModel = settingsViewModel,
                     onStartTripClick = {
                         activeTripViewModel.startTrip()
+                        ensureAudioServiceReady { service ->
+                            val trip = activeTripViewModel.uiState.value
+                            val settings = settingsViewModel.uiState.value
+                            service.updateConfiguration(
+                                settings.operatingMode,
+                                settings.startCommand,
+                                settings.stopCommand,
+                                trip.isTripActive,
+                                trip.currentTripId
+                            )
+                        }
                     },
                     onEndTripClick = { 
                         activeTripViewModel.endTrip()
                     },
                     onConnectToDevice = { device ->
-                        if (audioService == null) {
-                            startAndBindAudioService()
-                            // Service binding is asynchronous. In a real app, we'd queue this or wait.
-                            // For now, let's try calling it, but it might still be null for a few ms.
-                            lifecycleScope.launch {
-                                // Simple retry mechanism to wait for binding
-                                for (i in 1..10) {
-                                    if (audioService != null) {
-                                        audioService?.connectToPeer(device)
-                                        break
-                                    }
-                                    kotlinx.coroutines.delay(100)
-                                }
-                            }
-                        } else {
-                            audioService?.connectToPeer(device)
+                        ensureAudioServiceReady { service ->
+                            service.connectToPeer(device)
                         }
                     },
                     onDisconnectClick = {
@@ -167,7 +179,25 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
+    private fun ensureAudioServiceReady(action: (AudioService) -> Unit) {
+        audioService?.let { service ->
+            action(service)
+            return
+        }
+
+        pendingServiceActions.add(action)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startAndBindAudioService()
+        } else {
+            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     private fun startAndBindAudioService() {
+        if (audioService != null || isBound || isBindingService) {
+            return
+        }
+        isBindingService = true
         Intent(this, AudioService::class.java).also { intent ->
             startService(intent)
             bindService(intent, connection, Context.BIND_AUTO_CREATE)
@@ -177,7 +207,11 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private fun stopAndUnbindAudioService() {
         if (isBound) {
             unbindService(connection)
+            isBound = false
         }
+        isBindingService = false
+        pendingServiceActions.clear()
+        audioService = null
         Intent(this, AudioService::class.java).also { intent ->
             stopService(intent)
         }
@@ -192,7 +226,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: dev.wads.motoridecallconnect.data.model.Device?) {
         runOnUiThread {
             activeTripViewModel.onConnectionStatusChanged(status, peer)
-            pairingViewModel.updateConnectionStatus(status == dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTED)
+            pairingViewModel.updateConnectionStatus(status)
         }
     }
 
