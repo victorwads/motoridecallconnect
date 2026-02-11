@@ -1,15 +1,14 @@
 package dev.wads.motoridecallconnect.ui.pairing
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
+import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.utils.NetworkUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 
 class PairingViewModel(private val repository: DeviceDiscoveryRepository) : ViewModel() {
 
@@ -23,6 +22,9 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
+    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
 
     fun startDiscovery() {
         repository.startDiscovery()
@@ -49,8 +51,9 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
         repository.unregisterService()
     }
 
-    fun updateConnectionStatus(connected: Boolean) {
-        _isConnected.value = connected
+    fun updateConnectionStatus(status: ConnectionStatus) {
+        _connectionStatus.value = status
+        _isConnected.value = status == ConnectionStatus.CONNECTED
     }
 
     fun connectToDevice(device: Device) {

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.EmptyState
@@ -49,7 +50,7 @@ fun PairingScreen(
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val isHosting by viewModel.isHosting.collectAsState()
     val qrCodeText by viewModel.qrCodeText.collectAsState()
-    val isConnected by viewModel.isConnected.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Quick, 1: Rooms
     var viewState by remember { mutableStateOf<PairViewState>(PairViewState.List) }
@@ -214,9 +215,22 @@ fun PairingScreen(
                     }
                 )
                 
-                LaunchedEffect(isConnected) {
-                    if (isConnected) {
-                        pairState = PairConnectionState.Connected
+                LaunchedEffect(connectionStatus, pairState, selectedDevice?.id) {
+                    if (pairState == PairConnectionState.Connecting) {
+                        when (connectionStatus) {
+                            ConnectionStatus.CONNECTED -> pairState = PairConnectionState.Connected
+                            ConnectionStatus.ERROR, ConnectionStatus.DISCONNECTED -> pairState = PairConnectionState.Error
+                            ConnectionStatus.CONNECTING -> Unit
+                        }
+                    }
+                }
+
+                LaunchedEffect(pairState, selectedDevice?.id) {
+                    if (pairState == PairConnectionState.Connecting) {
+                        delay(15_000)
+                        if (pairState == PairConnectionState.Connecting) {
+                            pairState = PairConnectionState.Error
+                        }
                     }
                 }
             }
@@ -321,7 +335,20 @@ fun DeviceDetailView(
                             onBack()
                         }
                     }
-                    else -> {}
+                    PairConnectionState.Error -> {
+                        Text(
+                            text = stringResource(R.string.connection_failed),
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        BigButton(
+                            text = stringResource(R.string.connect),
+                            onClick = onConnect,
+                            variant = ButtonVariant.Outline,
+                            fullWidth = true
+                        )
+                    }
                 }
             }
         }
