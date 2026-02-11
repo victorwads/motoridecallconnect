@@ -7,6 +7,8 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -318,11 +320,43 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         connectedPeer = device
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, device)
-        if (device.ip != null && device.port != null) {
+        if (device.port != null) {
             try {
-                signalingClient.connectToPeer(InetAddress.getByName(device.ip), device.port)
+                val candidateIpStrings = buildConnectionCandidates(device)
+                val candidateAddresses = candidateIpStrings.mapNotNull { candidateIp ->
+                    try {
+                        InetAddress.getByName(candidateIp)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Skipping invalid candidate peer IP: $candidateIp", t)
+                        null
+                    }
+                }
+                if (candidateAddresses.isEmpty()) {
+                    throw IllegalArgumentException("Selected device has no valid IP candidates: $device")
+                }
+
+                // When connected to a Hotspot with no internet, Android might prioritize Cellular
+                // for the default network. We must explicitly bind the socket to the WiFi network
+                // to reach the local IP of the Hotspot host.
+                val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val wifiNetwork = connectivityManager.allNetworks.firstOrNull { network ->
+                    val capabilities = connectivityManager.getNetworkCapabilities(network)
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                }
+
+                if (wifiNetwork != null) {
+                    Log.i(TAG, "Binding signaling socket to WiFi network: $wifiNetwork")
+                } else {
+                    Log.w(TAG, "No WiFi network found for signaling socket. Using default.")
+                }
+
+                Log.i(
+                    TAG,
+                    "Connecting using candidate IPs=${candidateIpStrings.joinToString()} port=${device.port}"
+                )
+                signalingClient.connectToPeer(candidateAddresses, device.port, wifiNetwork)
             } catch (t: Throwable) {
-                Log.e(TAG, "Failed to resolve/connect peer ${device.ip}:${device.port}", t)
+                Log.e(TAG, "Failed to resolve/connect peer candidates for port ${device.port}", t)
                 connectionStatus = ConnectionStatus.ERROR
                 callback?.onConnectionStatusChanged(connectionStatus, device)
                 restartSignalingServer()
@@ -333,6 +367,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             callback?.onConnectionStatusChanged(connectionStatus, device)
             restartSignalingServer()
         }
+    }
+
+    private fun buildConnectionCandidates(device: Device): List<String> {
+        return buildList {
+            if (!device.ip.isNullOrBlank()) add(device.ip)
+            device.candidateIps.forEach { candidate ->
+                if (candidate.isNotBlank()) add(candidate)
+            }
+        }.distinct()
     }
 
     fun disconnect() {

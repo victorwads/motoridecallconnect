@@ -46,9 +46,14 @@ class DeviceDiscoveryRepository(context: Context) : NsdHelper.NsdListener {
         }
 
         val device = Device.fromNsdServiceInfo(serviceInfo)
-        if (!_discoveredDevices.value.any { it.id == device.id }) {
-            _discoveredDevices.value = _discoveredDevices.value + device
+        val currentDevices = _discoveredDevices.value.toMutableList()
+        val existingIndex = currentDevices.indexOfFirst { it.id == device.id }
+        if (existingIndex >= 0) {
+            currentDevices[existingIndex] = device
+        } else {
+            currentDevices += device
         }
+        _discoveredDevices.value = currentDevices
     }
 
     override fun onServiceLost(serviceInfo: NsdServiceInfo) {

@@ -8,7 +8,11 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -26,6 +30,14 @@ fun QrCodeScanner(
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     val executor = remember { Executors.newSingleThreadExecutor() }
+    var hasDeliveredScan by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            hasDeliveredScan = false
+            executor.shutdownNow()
+        }
+    }
 
     AndroidView(
         factory = { ctx ->
@@ -53,9 +65,12 @@ fun QrCodeScanner(
                         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
                         scanner.process(image)
                             .addOnSuccessListener { barcodes ->
+                                if (hasDeliveredScan) return@addOnSuccessListener
                                 for (barcode in barcodes) {
-                                    barcode.rawValue?.let { 
+                                    barcode.rawValue?.let {
+                                        hasDeliveredScan = true
                                         onCodeScanned(it)
+                                        return@addOnSuccessListener
                                     }
                                 }
                             }

@@ -36,6 +36,8 @@
     <string name="pairing_card_title">Pareamento</string>
     <string name="connect">Conectar</string>
     <string name="connect_and_start_trip">Conectar e iniciar viagem</string>
+    <string name="connection_target">Alvo: %1$s:%2$d</string>
+    <string name="connection_candidates_count">%1$d IPs candidatos</string>
     <string name="connecting">Conectando...</string>
     <string name="connected">Conectado!</string>
     <string name="connection_failed">Falha ao conectar. Verifique os dois dispositivos e tente novamente.</string>
@@ -144,4 +146,14 @@
     <string name="usage_pillion_desc">Conexão direta para conversar com quem está na mesma moto.</string>
     <string name="usage_other_bike_title">Com outra moto</string>
     <string name="usage_other_bike_desc">Comunicação moto-a-moto em comboio (alcance limitado pelo Wi-Fi).</string>
+    <string name="scan_qr_code">Escanear QR Code</string>
+    <string name="camera_permission_title">Permissão de câmera necessária</string>
+    <string name="camera_permission_body">Permita acesso à câmera para escanear o QR code do outro aparelho.</string>
+    <string name="grant_camera_permission">Permitir câmera</string>
+    <string name="network_diagnostics_title">Diagnóstico de rede</string>
+    <string name="network_primary_ip">IP principal: %1$s</string>
+    <string name="network_candidate_ips">IPs candidatos: %1$s</string>
+    <string name="network_interfaces_title">Interfaces detectadas</string>
+    <string name="network_interfaces_empty">Nenhuma interface de rede ativa encontrada.</string>
+    <string name="refresh_network_info">Atualizar info de rede</string>
 </resources>

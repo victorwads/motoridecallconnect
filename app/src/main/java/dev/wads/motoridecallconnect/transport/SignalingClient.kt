@@ -6,6 +6,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
@@ -73,18 +74,61 @@ class SignalingClient(private val listener: SignalingListener) {
         }
     }
 
-    fun connectToPeer(address: InetAddress, port: Int) {
+    fun connectToPeer(address: InetAddress, port: Int, network: android.net.Network? = null) {
+        connectToPeer(listOf(address), port, network)
+    }
+
+    fun connectToPeer(addresses: List<InetAddress>, port: Int, network: android.net.Network? = null) {
         connectExecutor.execute {
-            try {
-                val connectedSocket = Socket(address, port)
-                attachSocket(connectedSocket, isInitiator = true)
-            } catch (e: Exception) {
-                if (!isClosed) {
-                    Log.e(TAG, "Error connecting to peer", e)
-                    listener.onSignalingError(e)
-                    close()
+            if (addresses.isEmpty()) {
+                val error = IllegalArgumentException("No candidate peer addresses provided.")
+                listener.onSignalingError(error)
+                return@execute
+            }
+
+            var lastError: Exception? = null
+            for (address in addresses) {
+                try {
+                    val connectedSocket = createConnectedSocket(address, port, network)
+                    if (!isClosed) {
+                        Log.i(TAG, "Connected to peer using ${address.hostAddress}:$port")
+                        attachSocket(connectedSocket, isInitiator = true)
+                    } else {
+                        connectedSocket.close()
+                    }
+                    return@execute
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.w(TAG, "Failed to connect to ${address.hostAddress}:$port", e)
                 }
             }
+
+            if (!isClosed) {
+                val finalError = IllegalStateException(
+                    "Unable to connect to peer on any candidate IP: ${
+                        addresses.joinToString { it.hostAddress ?: "unknown" }
+                    }",
+                    lastError
+                )
+                Log.e(TAG, "Error connecting to peer using candidates", finalError)
+                listener.onSignalingError(finalError)
+                close()
+            }
+        }
+    }
+
+    private fun createConnectedSocket(
+        address: InetAddress,
+        port: Int,
+        network: android.net.Network?
+    ): Socket {
+        val socket = network?.socketFactory?.createSocket() ?: Socket()
+        try {
+            socket.connect(InetSocketAddress(address, port), SOCKET_CONNECT_TIMEOUT_MS)
+            return socket
+        } catch (e: Exception) {
+            runCatching { socket.close() }
+            throw e
         }
     }
 
@@ -221,5 +265,6 @@ class SignalingClient(private val listener: SignalingListener) {
 
     companion object {
         private const val TAG = "SignalingClient"
+        private const val SOCKET_CONNECT_TIMEOUT_MS = 2_500
     }
 }
