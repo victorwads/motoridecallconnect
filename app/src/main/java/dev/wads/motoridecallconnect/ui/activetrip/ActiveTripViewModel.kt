@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 enum class OperatingMode {
@@ -51,6 +54,7 @@ data class ActiveTripUiState(
 class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() {
     companion object {
         private const val TAG = "ActiveTripViewModel"
+        private val transcriptTimeFormatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     }
 
     private val _uiState = MutableStateFlow(ActiveTripUiState())
@@ -109,7 +113,9 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                 repository.getTranscripts(subscribeHostUid, subscribeTripId).collect { lines ->
                     _uiState.update { state ->
                         // Merge partial results from local state with final results from Firebase
-                        val firebaseList = lines.map { "${it.authorName}: ${it.text}" }
+                        val firebaseList = lines.map { line ->
+                            "${formatTranscriptTime(line.timestamp)} - ${line.authorName}: ${line.text}"
+                        }
                         val localPartial = state.transcript.lastOrNull()?.takeIf { it.startsWith("Parcial:") }
 
                         state.copy(transcript = if (localPartial != null) firebaseList + localPartial else firebaseList)
@@ -260,7 +266,8 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                 if (updated.isNotEmpty() && updated.last().startsWith("Parcial:")) {
                     updated.removeAt(updated.lastIndex)
                 }
-                updated.add("Você: $newTranscript")
+                val now = System.currentTimeMillis()
+                updated.add("${formatTranscriptTime(now)} - Você: $newTranscript")
                 s.copy(transcript = updated)
             }
 
@@ -296,6 +303,12 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
     fun updateModelDownloadStatus(isDownloading: Boolean, progress: Int) {
         _uiState.update { it.copy(isModelDownloading = isDownloading, modelDownloadProgress = progress) }
+    }
+
+    private fun formatTranscriptTime(timestamp: Long): String {
+        return synchronized(transcriptTimeFormatter) {
+            transcriptTimeFormatter.format(Date(timestamp))
+        }
     }
 
     private fun buildTripPath(hostUid: String?, tripId: String?): String? {

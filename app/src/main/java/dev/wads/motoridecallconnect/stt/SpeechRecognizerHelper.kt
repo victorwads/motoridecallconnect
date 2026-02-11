@@ -322,6 +322,7 @@ class SpeechRecognizerHelper(
 
             try {
                 val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                var lastPartialResult: String? = null
                 recognizer.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {}
                     override fun onBeginningOfSpeech() {}
@@ -331,7 +332,12 @@ class SpeechRecognizerHelper(
 
                     override fun onError(error: Int) {
                         val errorMessage = mapSpeechRecognizerError(error)
-                        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                            val fallbackText = lastPartialResult?.trim().orEmpty()
+                            if (fallbackText.isNotBlank()) {
+                                listener.onFinalResults(fallbackText)
+                            }
+                        } else {
                             listener.onError(errorMessage)
                         }
                         restartLegacyNativeRecognizer()
@@ -344,6 +350,11 @@ class SpeechRecognizerHelper(
                             ?.trim()
                         if (!text.isNullOrBlank()) {
                             listener.onFinalResults(text)
+                        } else {
+                            val fallbackText = lastPartialResult?.trim().orEmpty()
+                            if (fallbackText.isNotBlank()) {
+                                listener.onFinalResults(fallbackText)
+                            }
                         }
                         restartLegacyNativeRecognizer()
                     }
@@ -354,6 +365,7 @@ class SpeechRecognizerHelper(
                             ?.firstOrNull()
                             ?.takeIf { it.isNotBlank() }
                             ?.let { partial ->
+                                lastPartialResult = partial
                                 listener.onPartialResults(partial)
                             }
                     }
@@ -528,6 +540,7 @@ class SpeechRecognizerHelper(
         val resultLatch = CountDownLatch(1)
         val textRef = AtomicReference<String?>(null)
         val errorRef = AtomicReference<String?>(null)
+        val partialRef = AtomicReference<String?>(null)
 
         var recognizer: SpeechRecognizer? = null
         var readPipe: ParcelFileDescriptor? = null
@@ -550,7 +563,16 @@ class SpeechRecognizerHelper(
 
                     override fun onError(error: Int) {
                         val errorMessage = mapSpeechRecognizerError(error)
-                        errorRef.compareAndSet(null, errorMessage)
+                        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                            val fallbackText = partialRef.get()?.trim().orEmpty()
+                            if (fallbackText.isNotBlank()) {
+                                textRef.compareAndSet(null, fallbackText)
+                            } else {
+                                errorRef.compareAndSet(null, errorMessage)
+                            }
+                        } else {
+                            errorRef.compareAndSet(null, errorMessage)
+                        }
                         resultLatch.countDown()
                     }
 
@@ -568,6 +590,7 @@ class SpeechRecognizerHelper(
                             ?.firstOrNull()
                             ?.let { partial ->
                                 if (partial.isNotBlank()) {
+                                    partialRef.set(partial)
                                     listener.onPartialResults(partial)
                                 }
                             }
