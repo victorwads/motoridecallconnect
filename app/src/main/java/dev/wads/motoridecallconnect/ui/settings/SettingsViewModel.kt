@@ -12,6 +12,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+
+private const val DEFAULT_VAD_START_DELAY_SECONDS = 0f
+private const val DEFAULT_VAD_STOP_DELAY_SECONDS = 1.5f
+private const val MIN_VAD_DELAY_SECONDS = 0f
+private const val MAX_VAD_DELAY_SECONDS = 5f
 
 data class SettingsUiState(
     val operatingMode: OperatingMode = OperatingMode.VOICE_COMMAND,
@@ -19,11 +25,12 @@ data class SettingsUiState(
     val stopCommand: String = "parar",
     val isRecordingTranscript: Boolean = true,
     val sttEngine: SttEngine = SttEngine.WHISPER,
-    val whisperModelId: String = WhisperModelCatalog.defaultOption.id
+    val whisperModelId: String = WhisperModelCatalog.defaultOption.id,
+    val vadStartDelaySeconds: Float = DEFAULT_VAD_START_DELAY_SECONDS,
+    val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
-
     private val preferences = UserPreferences(application.applicationContext)
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -67,6 +74,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             preferences.whisperModelId.collect { saved ->
                 val modelId = WhisperModelCatalog.findById(saved ?: "")?.id ?: return@collect
                 _uiState.update { it.copy(whisperModelId = modelId) }
+            }
+        }
+        viewModelScope.launch {
+            preferences.vadStartDelaySeconds.collect { saved ->
+                if (saved != null) {
+                    _uiState.update { it.copy(vadStartDelaySeconds = normalizeDelaySeconds(saved)) }
+                }
+            }
+        }
+        viewModelScope.launch {
+            preferences.vadStopDelaySeconds.collect { saved ->
+                if (saved != null) {
+                    _uiState.update { it.copy(vadStopDelaySeconds = normalizeDelaySeconds(saved)) }
+                }
             }
         }
     }
@@ -114,6 +135,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun onVadStartDelayChange(seconds: Float) {
+        val normalized = normalizeDelaySeconds(seconds)
+        _uiState.update { it.copy(vadStartDelaySeconds = normalized) }
+        viewModelScope.launch {
+            preferences.setVadStartDelaySeconds(normalized)
+        }
+    }
+
+    fun onVadStopDelayChange(seconds: Float) {
+        val normalized = normalizeDelaySeconds(seconds)
+        _uiState.update { it.copy(vadStopDelaySeconds = normalized) }
+        viewModelScope.launch {
+            preferences.setVadStopDelaySeconds(normalized)
+        }
+    }
+
     private fun parseOperatingMode(raw: String?): OperatingMode? {
         if (raw.isNullOrBlank()) {
             return null
@@ -126,5 +163,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return null
         }
         return runCatching { SttEngine.valueOf(raw) }.getOrNull()
+    }
+
+    private fun normalizeDelaySeconds(seconds: Float): Float {
+        val clamped = seconds.coerceIn(MIN_VAD_DELAY_SECONDS, MAX_VAD_DELAY_SECONDS)
+        return (clamped * 10f).roundToInt() / 10f
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -23,6 +24,8 @@ class UserPreferences(private val context: Context) {
         val RECORD_TRANSCRIPT = booleanPreferencesKey("record_transcript")
         val STT_ENGINE = stringPreferencesKey("stt_engine")
         val WHISPER_MODEL_ID = stringPreferencesKey("whisper_model_id")
+        val VAD_START_DELAY_SECONDS = floatPreferencesKey("vad_start_delay_seconds")
+        val VAD_STOP_DELAY_SECONDS = floatPreferencesKey("vad_stop_delay_seconds")
     }
 
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data
@@ -68,6 +71,16 @@ class UserPreferences(private val context: Context) {
     val whisperModelId: Flow<String?> = context.dataStore.data
         .map { preferences ->
             preferences[WHISPER_MODEL_ID]
+        }
+
+    val vadStartDelaySeconds: Flow<Float?> = context.dataStore.data
+        .map { preferences ->
+            preferences[VAD_START_DELAY_SECONDS]
+        }
+
+    val vadStopDelaySeconds: Flow<Float?> = context.dataStore.data
+        .map { preferences ->
+            preferences[VAD_STOP_DELAY_SECONDS]
         }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
@@ -121,6 +134,18 @@ class UserPreferences(private val context: Context) {
     suspend fun setWhisperModelId(modelId: String) {
         context.dataStore.edit { preferences ->
             preferences[WHISPER_MODEL_ID] = modelId
+        }
+    }
+
+    suspend fun setVadStartDelaySeconds(seconds: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[VAD_START_DELAY_SECONDS] = seconds
+        }
+    }
+
+    suspend fun setVadStopDelaySeconds(seconds: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[VAD_STOP_DELAY_SECONDS] = seconds
         }
     }
 }

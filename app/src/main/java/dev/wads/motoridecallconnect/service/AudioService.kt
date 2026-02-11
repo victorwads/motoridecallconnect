@@ -46,6 +46,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         private const val REMOTE_TRACK_GAIN = 2.0
         private const val TARGET_VOICE_CALL_VOLUME_RATIO = 0.95f
         private const val TARGET_MUSIC_VOLUME_RATIO = 0.80f
+        private const val DEFAULT_VAD_START_DELAY_MS = 0L
+        private const val DEFAULT_VAD_STOP_DELAY_MS = 1_500L
+        private const val MIN_VAD_DELAY_MS = 0L
+        private const val MAX_VAD_DELAY_MS = 5_000L
         private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
         private const val AUDIO_SAMPLE_RATE_HZ = 48_000
         private const val AUDIO_BYTES_PER_SAMPLE = 2
@@ -74,6 +78,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var currentMode = OperatingMode.VOICE_COMMAND
     private var startCommand = "iniciar"
     private var stopCommand = "parar"
+    private var vadStartDelayMs = DEFAULT_VAD_START_DELAY_MS
+    private var vadStopDelayMs = DEFAULT_VAD_STOP_DELAY_MS
     private var isTransmitting = false
     private var isTripActive = false
     private var currentTripId: String? = null
@@ -89,6 +95,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var bufferedAudioDurationMs = 0L
     private var consecutiveSilenceDurationMs = 0L
     private var chunkHadSpeech = false
+    private var vadSpeechDetectedAtMs: Long? = null
+    private var vadSilenceDetectedAtMs: Long? = null
     private var isAudioCaptureRunning = false
     private var isHostingEnabled = false
     private var sttEngine = SttEngine.WHISPER
@@ -298,6 +306,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         stopCmd: String,
         sttEngine: SttEngine,
         modelId: String,
+        vadStartDelaySeconds: Float? = null,
+        vadStopDelaySeconds: Float? = null,
         tripActive: Boolean,
         tripId: String? = null,
         tripHostUid: String? = null,
@@ -336,6 +346,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
+        if (vadStartDelaySeconds != null) {
+            vadStartDelayMs = normalizeVadDelayMs(vadStartDelaySeconds)
+        }
+        if (vadStopDelaySeconds != null) {
+            vadStopDelayMs = normalizeVadDelayMs(vadStopDelaySeconds)
+        }
         this.sttEngine = sttEngine
         whisperModelId = resolvedModelId
         isTripActive = tripActive
@@ -359,6 +375,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
 
         if (tripChanged && wasTripActive && !tripActive) {
+            resetVadTimingState()
             setTransmitting(false, reason = "trip_end")
             applyRemoteTransmissionState(false, source = "trip_end")
             stopAudioCaptureIfNeeded(reason = "trip_end")
@@ -428,18 +445,24 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.d(
             TAG,
             "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, " +
+                "VadStartDelayMs=$vadStartDelayMs, VadStopDelayMs=$vadStopDelayMs, " +
                 "SttEngine=$sttEngine, WhisperModel=$whisperModelId, TripActive=$tripActive"
         )
 
         if (!isTripActive) {
+            resetVadTimingState()
             setTransmitting(false, reason = "trip_inactive")
         } else {
             when (currentMode) {
                 OperatingMode.CONTINUOUS_TRANSMISSION -> {
+                    resetVadTimingState()
                     setTransmitting(true, reason = "continuous_mode")
                 }
                 OperatingMode.VOICE_ACTIVITY_DETECTION,
                 OperatingMode.VOICE_COMMAND -> {
+                    if (currentMode != OperatingMode.VOICE_ACTIVITY_DETECTION) {
+                        resetVadTimingState()
+                    }
                     if (tripChanged && tripActive) {
                         setTransmitting(false, reason = "trip_start_wait_for_trigger")
                     } else if (modeChanged) {
@@ -629,11 +652,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         
         // 1. Handle Intercom Transmission (VAD Logic)
         if (isTripActive && currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
-            if (isSpeechDetected && !isTransmitting) {
-                setTransmitting(true, reason = "vad_speech_detected")
-            } else if (!isSpeechDetected && isTransmitting) {
-                setTransmitting(false, reason = "vad_silence_detected")
-            }
+            handleVoiceActivityTransmission(isSpeechDetected = isSpeechDetected, nowMs = now)
+        } else {
+            resetVadTimingState()
         }
 
         // 2. Handle Transcription Recording for the selected STT engine.
@@ -717,6 +738,28 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         } else if (stopKeyword.isNotEmpty() && command.contains(stopKeyword, ignoreCase = true) && isTransmitting) {
             setTransmitting(false, reason = "voice_command_stop")
         }
+    }
+
+    private fun handleVoiceActivityTransmission(isSpeechDetected: Boolean, nowMs: Long) {
+        if (isSpeechDetected) {
+            vadSilenceDetectedAtMs = null
+            val speechStartMs = vadSpeechDetectedAtMs ?: nowMs.also { vadSpeechDetectedAtMs = it }
+            if (!isTransmitting && nowMs - speechStartMs >= vadStartDelayMs) {
+                setTransmitting(true, reason = "vad_speech_detected")
+            }
+            return
+        }
+
+        vadSpeechDetectedAtMs = null
+        val silenceStartMs = vadSilenceDetectedAtMs ?: nowMs.also { vadSilenceDetectedAtMs = it }
+        if (isTransmitting && nowMs - silenceStartMs >= vadStopDelayMs) {
+            setTransmitting(false, reason = "vad_silence_detected")
+        }
+    }
+
+    private fun resetVadTimingState() {
+        vadSpeechDetectedAtMs = null
+        vadSilenceDetectedAtMs = null
     }
 
     private fun setTransmitting(transmitting: Boolean, reason: String) {
@@ -845,6 +888,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (currentVolume < targetVolume) {
             audioManager.setStreamVolume(streamType, targetVolume, 0)
         }
+    }
+
+    private fun normalizeVadDelayMs(seconds: Float): Long {
+        val clampedMs = (seconds * 1000f).roundToInt().toLong().coerceIn(MIN_VAD_DELAY_MS, MAX_VAD_DELAY_MS)
+        return ((clampedMs + 50L) / 100L) * 100L
     }
 
     private fun createNotificationChannel() {

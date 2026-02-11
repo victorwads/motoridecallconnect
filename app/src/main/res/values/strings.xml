@@ -100,6 +100,10 @@
     <string name="mode_voice_command">Voice Command</string>
     <string name="mode_vad">Voice Activity Detection</string>
     <string name="mode_continuous">Continuous Transmission</string>
+    <string name="vad_delays_header">VAD Timing</string>
+    <string name="vad_delay_hint">Adjust how long speech/silence must persist before toggling transmission.</string>
+    <string name="vad_start_delay_label">Start delay: %1$.1f s</string>
+    <string name="vad_stop_delay_label">Stop delay: %1$.1f s</string>
 
     <!-- Navigation & History -->
     <string name="nav_active_trip">Home</string>

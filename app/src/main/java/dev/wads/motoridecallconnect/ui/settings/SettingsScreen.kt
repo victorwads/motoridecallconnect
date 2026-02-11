@@ -73,12 +73,16 @@ fun SettingsScreen(
     isRecordingTranscript: Boolean,
     sttEngine: SttEngine,
     whisperModelId: String,
+    vadStartDelaySeconds: Float,
+    vadStopDelaySeconds: Float,
     onModeChange: (OperatingMode) -> Unit,
     onStartCommandChange: (String) -> Unit,
     onStopCommandChange: (String) -> Unit,
     onRecordingToggle: (Boolean) -> Unit,
     onSttEngineChange: (SttEngine) -> Unit,
     onWhisperModelChange: (String) -> Unit,
+    onVadStartDelayChange: (Float) -> Unit,
+    onVadStopDelayChange: (Float) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
@@ -164,6 +168,42 @@ fun SettingsScreen(
                     onValueChange = onStopCommandChange,
                     label = { Text(stringResource(R.string.stop_command_label)) },
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (operatingMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.vad_delays_header),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = stringResource(R.string.vad_delay_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+                )
+
+                Text(
+                    text = stringResource(R.string.vad_start_delay_label, vadStartDelaySeconds),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = vadStartDelaySeconds,
+                    onValueChange = onVadStartDelayChange,
+                    valueRange = 0f..5f,
+                    steps = 49
+                )
+
+                Text(
+                    text = stringResource(R.string.vad_stop_delay_label, vadStopDelaySeconds),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = vadStopDelaySeconds,
+                    onValueChange = onVadStopDelayChange,
+                    valueRange = 0f..5f,
+                    steps = 49
                 )
             }
 
@@ -389,12 +429,16 @@ private fun SettingsScreenPreview() {
                 isRecordingTranscript = true,
                 sttEngine = SttEngine.WHISPER,
                 whisperModelId = WhisperModelCatalog.defaultOption.id,
+                vadStartDelaySeconds = 0f,
+                vadStopDelaySeconds = 1.5f,
                 onModeChange = {},
                 onStartCommandChange = {},
                 onStopCommandChange = {},
                 onRecordingToggle = {},
                 onSttEngineChange = {},
                 onWhisperModelChange = {},
+                onVadStartDelayChange = {},
+                onVadStopDelayChange = {},
                 onTestAudio = {},
                 onNavigateBack = {},
                 onLogout = {}
