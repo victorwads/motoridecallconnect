@@ -276,6 +276,12 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
+    override fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean) {
+        runOnUiThread {
+            activeTripViewModel.onAudioRouteChanged(routeLabel, isBluetoothActive)
+        }
+    }
+
     override fun onModelDownloadProgress(progress: Int) {
         runOnUiThread {
             activeTripViewModel.updateModelDownloadStatus(true, progress)

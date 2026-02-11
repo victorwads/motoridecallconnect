@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -138,6 +139,7 @@ fun ActiveTripScreen(
         }
 
         TransmissionStatusCard(uiState = uiState)
+        BluetoothAudioRouteCard(uiState = uiState)
 
         if (!uiState.tripPath.isNullOrBlank()) {
             StatusCard(title = "Trip Sync Path", icon = Icons.Default.Call) {
@@ -172,6 +174,36 @@ fun ActiveTripScreen(
         }
         
         Spacer(modifier = Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun BluetoothAudioRouteCard(uiState: ActiveTripUiState) {
+    val statusColor = if (uiState.isBluetoothAudioActive) {
+        Color(0xFF22C55E)
+    } else {
+        MaterialTheme.colorScheme.error
+    }
+    val statusText = if (uiState.isBluetoothAudioActive) {
+        stringResource(R.string.bluetooth_audio_active)
+    } else {
+        stringResource(R.string.bluetooth_audio_required)
+    }
+
+    StatusCard(title = stringResource(R.string.audio_route_title), icon = Icons.Default.Headphones) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = statusColor,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = stringResource(R.string.audio_route_current_format, uiState.audioRouteLabel),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

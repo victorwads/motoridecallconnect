@@ -41,6 +41,8 @@ data class ActiveTripUiState(
     val isLocalTransmitting: Boolean = false,
     val isRemoteTransmitting: Boolean = false,
     val connectedPeer: Device? = null,
+    val audioRouteLabel: String = "Bluetooth headset unavailable",
+    val isBluetoothAudioActive: Boolean = false,
     val transcript: List<String> = emptyList(),
     val isModelDownloading: Boolean = false,
     val modelDownloadProgress: Int = 0
@@ -181,6 +183,16 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             it.copy(
                 isLocalTransmitting = isLocalTransmitting,
                 isRemoteTransmitting = isRemoteTransmitting
+            )
+        }
+    }
+
+    fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean) {
+        _uiState.update {
+            it.copy(
+                audioRouteLabel = routeLabel,
+                isBluetoothAudioActive = isBluetoothActive,
+                isLocalTransmitting = if (isBluetoothActive) it.isLocalTransmitting else false
             )
         }
     }

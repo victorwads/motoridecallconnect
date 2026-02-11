@@ -79,6 +79,10 @@
     <string name="transmission_remote_active">Receiving audio</string>
     <string name="transmission_remote_idle">Peer silent</string>
     <string name="transmission_waiting_connection">Waiting connection</string>
+    <string name="audio_route_title">Audio Route</string>
+    <string name="bluetooth_audio_active">Bluetooth mic and headset active</string>
+    <string name="bluetooth_audio_required">Bluetooth is required for call audio</string>
+    <string name="audio_route_current_format">Current route: %1$s</string>
     <string name="config_header">Configuration</string>
     <string name="operation_mode_header">Operation Mode</string>
     <string name="start_command_label">Start Command</string>

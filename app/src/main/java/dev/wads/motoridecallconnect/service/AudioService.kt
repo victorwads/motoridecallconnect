@@ -1,11 +1,15 @@
 package dev.wads.motoridecallconnect.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Binder
@@ -14,6 +18,7 @@ import android.os.IBinder
 import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.google.firebase.auth.FirebaseAuth
@@ -50,6 +55,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         private const val DEFAULT_VAD_STOP_DELAY_MS = 1_500L
         private const val MIN_VAD_DELAY_MS = 0L
         private const val MAX_VAD_DELAY_MS = 5_000L
+        private const val AUDIO_ROUTE_LABEL_BT_UNAVAILABLE = "Bluetooth headset unavailable"
+        private const val AUDIO_ROUTE_LABEL_BT_PERMISSION_MISSING = "Bluetooth permission missing"
+        private const val AUDIO_ROUTE_LABEL_BT_PENDING = "Bluetooth available, waiting route activation"
+        private const val AUDIO_ROUTE_LABEL_BT_ACTIVE = "Bluetooth headset active"
+        private const val AUDIO_ROUTE_LABEL_EARPIECE = "Phone earpiece"
+        private const val AUDIO_ROUTE_LABEL_SPEAKER = "Phone speaker"
+        private const val AUDIO_ROUTE_LABEL_WIRED = "Wired headset"
+        private const val AUDIO_ROUTE_LABEL_USB = "USB audio"
+        private const val AUDIO_ROUTE_LABEL_PHONE = "Phone audio"
         private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
         private const val AUDIO_SAMPLE_RATE_HZ = 48_000
         private const val AUDIO_BYTES_PER_SAMPLE = 2
@@ -111,6 +125,26 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var savedMicrophoneMute: Boolean? = null
     private var savedVoiceCallVolume: Int? = null
     private var savedMusicVolume: Int? = null
+    private var savedCommunicationDevice: AudioDeviceInfo? = null
+    private var bluetoothScoStartedByService = false
+    private var isBluetoothAudioRouteActive = false
+    private var currentAudioRouteLabel = AUDIO_ROUTE_LABEL_BT_UNAVAILABLE
+    private var communicationDeviceChangedListener: AudioManager.OnCommunicationDeviceChangedListener? = null
+
+    private data class AudioRouteState(
+        val label: String,
+        val isBluetoothActive: Boolean
+    )
+
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            handleAudioDeviceInventoryChanged(reason = "audio_devices_added")
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            handleAudioDeviceInventoryChanged(reason = "audio_devices_removed")
+        }
+    }
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -122,6 +156,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             hostUid: String? = null,
             tripPath: String? = null
         )
+        fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean)
         fun onModelDownloadProgress(progress: Int)
         fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
     }
@@ -191,6 +226,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         audioCapturer = AudioCapturer(this)
         signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
+        registerAudioRouteCallbacks()
+        refreshAudioRouteState(reason = "service_create")
         Log.i(TAG, "Service created. Idle until connect/host/trip events.")
     }
 
@@ -210,6 +247,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterAudioRouteCallbacks()
         restoreCommunicationAudioProfile(reason = "service_destroy")
         releaseAudioDucking()
         stopAudioCaptureIfNeeded(reason = "service_destroy")
@@ -232,6 +270,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
         callback.onTransmissionStateChanged(isTransmitting, isRemoteTransmitting)
         callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
+        callback.onAudioRouteChanged(currentAudioRouteLabel, isBluetoothAudioRouteActive, isBluetoothRequired = true)
     }
 
     fun unregisterCallback(callback: ServiceCallback) {
@@ -384,7 +423,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         if (tripChanged && tripActive) {
             resetTranscriptionState(clearAudio = true)
-            startAudioCaptureIfNeeded()
+            updateCommunicationAudioProfile(reason = "trip_start")
+            if (isBluetoothAudioRouteActive) {
+                startAudioCaptureIfNeeded()
+            } else {
+                stopAudioCaptureIfNeeded(reason = "trip_start_bluetooth_missing")
+            }
             lifecycleScope.launch {
                 val recognizer = getOrCreateSpeechRecognizerHelper()
                 if (engineChanged) {
@@ -396,7 +440,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 if (sttEngine == SttEngine.WHISPER) {
                     recognizer.downloadModelIfNeeded()
                 }
-                if (isTripActive) {
+                if (isTripActive && isBluetoothAudioRouteActive) {
                     recognizer.startListening()
                 }
             }
@@ -410,7 +454,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 if (sttEngine == SttEngine.WHISPER) {
                     recognizer.downloadModelIfNeeded()
                 }
-                if (isTripActive) {
+                if (isTripActive && isBluetoothAudioRouteActive) {
                     recognizer.startListening()
                 }
             }
@@ -637,6 +681,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val now = System.currentTimeMillis()
         val isSpeechDetected = vad.isSpeech(currentData)
 
+        if (isTripActive && !isBluetoothAudioRouteActive) {
+            resetVadTimingState()
+            synchronized(transcriptionStateLock) {
+                if (audioBuffer.isNotEmpty()) {
+                    resetTranscriptionStateLocked(clearAudio = true)
+                }
+            }
+            return
+        }
+
         if (now - lastTransmissionTime >= PIPELINE_LOG_INTERVAL_MS) {
             lastTransmissionTime = now
             Log.d(
@@ -763,6 +817,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun setTransmitting(transmitting: Boolean, reason: String) {
+        if (transmitting && !isBluetoothAudioRouteActive) {
+            Log.w(TAG, "Blocking transmission because Bluetooth audio route is not active. reason=$reason")
+            forceStopTransmissionDueToInvalidRoute(reason = "tx_blocked_bluetooth_unavailable")
+            notifyAudioRouteChanged()
+            syncOutgoingAudioState(reason = "tx_blocked_no_bluetooth")
+            return
+        }
+
         if (isTransmitting == transmitting) {
             notifyTransmissionStateChanged()
             syncOutgoingAudioState(reason = reason)
@@ -782,17 +844,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun shouldEnableOutgoingAudio(): Boolean {
-        return isTripActive && isTransmitting && isRtcConnected
+        return isTripActive && isTransmitting && isRtcConnected && isBluetoothAudioRouteActive
     }
 
     private fun syncOutgoingAudioState(reason: String) {
+        updateCommunicationAudioProfile(reason = "sync_outgoing_audio")
         val enabled = shouldEnableOutgoingAudio()
         webRtcClient.setLocalAudioEnabled(enabled)
-        updateCommunicationAudioProfile(reason = "sync_outgoing_audio")
         Log.d(
             TAG,
             "Sync outgoing audio. enabled=$enabled, reason=$reason, tripActive=$isTripActive, " +
-                "transmitting=$isTransmitting, connectionStatus=$connectionStatus"
+                "transmitting=$isTransmitting, connectionStatus=$connectionStatus, " +
+                "bluetoothRouteActive=$isBluetoothAudioRouteActive"
         )
     }
 
@@ -826,6 +889,36 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
+    private fun registerAudioRouteCallbacks() {
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val listener = AudioManager.OnCommunicationDeviceChangedListener {
+                updateCommunicationAudioProfile(reason = "communication_device_changed")
+                refreshAudioRouteState(reason = "communication_device_changed")
+            }
+            communicationDeviceChangedListener = listener
+            audioManager.addOnCommunicationDeviceChangedListener(mainExecutor, listener)
+        }
+    }
+
+    private fun unregisterAudioRouteCallbacks() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            communicationDeviceChangedListener?.let { listener ->
+                audioManager.removeOnCommunicationDeviceChangedListener(listener)
+            }
+            communicationDeviceChangedListener = null
+        }
+        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
+    }
+
+    private fun handleAudioDeviceInventoryChanged(reason: String) {
+        if (shouldUseCommunicationAudioProfile()) {
+            updateCommunicationAudioProfile(reason)
+        } else {
+            refreshAudioRouteState(reason)
+        }
+    }
+
     private fun shouldUseCommunicationAudioProfile(): Boolean {
         return connectionStatus == ConnectionStatus.CONNECTING ||
             isRtcConnected ||
@@ -837,9 +930,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             applyCommunicationAudioProfile(reason)
         } else {
             restoreCommunicationAudioProfile(reason)
+            refreshAudioRouteState(reason = "profile_restored:$reason")
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun applyCommunicationAudioProfile(reason: String) {
         if (!communicationProfileApplied) {
             savedAudioMode = audioManager.mode
@@ -847,21 +942,53 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             savedMicrophoneMute = audioManager.isMicrophoneMute
             savedVoiceCallVolume = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
             savedMusicVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                savedCommunicationDevice = audioManager.communicationDevice
+            }
             communicationProfileApplied = true
         }
 
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioManager.isSpeakerphoneOn = true
+        audioManager.isSpeakerphoneOn = false
         audioManager.isMicrophoneMute = false
         boostStreamVolume(AudioManager.STREAM_VOICE_CALL, TARGET_VOICE_CALL_VOLUME_RATIO)
         boostStreamVolume(AudioManager.STREAM_MUSIC, TARGET_MUSIC_VOLUME_RATIO)
-        Log.d(TAG, "Communication audio profile applied. reason=$reason")
+
+        enforceBluetoothAudioRoute()
+        refreshAudioRouteState(reason = "profile_applied:$reason")
+        updateTripAudioCaptureForRoute()
+
+        if (!isBluetoothAudioRouteActive) {
+            forceStopTransmissionDueToInvalidRoute(reason = "bluetooth_route_unavailable:$reason")
+            webRtcClient.setLocalAudioEnabled(false)
+        }
+        Log.d(
+            TAG,
+            "Communication audio profile applied. reason=$reason, route=$currentAudioRouteLabel, " +
+                "bluetoothRouteActive=$isBluetoothAudioRouteActive"
+        )
     }
 
+    @Suppress("DEPRECATION")
     private fun restoreCommunicationAudioProfile(reason: String) {
         if (!communicationProfileApplied) {
             return
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+            savedCommunicationDevice?.let { device ->
+                runCatching { audioManager.setCommunicationDevice(device) }
+            }
+        } else {
+            if (audioManager.isBluetoothScoOn) {
+                audioManager.isBluetoothScoOn = false
+            }
+            if (bluetoothScoStartedByService) {
+                audioManager.stopBluetoothSco()
+                bluetoothScoStartedByService = false
+            }
+        }
+
         savedAudioMode?.let { audioManager.mode = it }
         savedSpeakerphoneOn?.let { audioManager.isSpeakerphoneOn = it }
         savedMicrophoneMute?.let { audioManager.isMicrophoneMute = it }
@@ -874,7 +1001,178 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         savedMicrophoneMute = null
         savedVoiceCallVolume = null
         savedMusicVolume = null
+        savedCommunicationDevice = null
         Log.d(TAG, "Communication audio profile restored. reason=$reason")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enforceBluetoothAudioRoute() {
+        if (!hasBluetoothConnectPermission()) {
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val bluetoothDevice = findPreferredBluetoothCommunicationDevice()
+            if (bluetoothDevice != null) {
+                audioManager.setCommunicationDevice(bluetoothDevice)
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+            return
+        }
+
+        val hasBluetoothDevice = audioManager.getDevices(AudioManager.GET_DEVICES_ALL)
+            .any { isBluetoothCommunicationDevice(it) }
+        if (hasBluetoothDevice) {
+            audioManager.startBluetoothSco()
+            audioManager.isBluetoothScoOn = true
+            bluetoothScoStartedByService = true
+        } else {
+            if (audioManager.isBluetoothScoOn) {
+                audioManager.isBluetoothScoOn = false
+            }
+            if (bluetoothScoStartedByService) {
+                audioManager.stopBluetoothSco()
+                bluetoothScoStartedByService = false
+            }
+        }
+    }
+
+    private fun refreshAudioRouteState(reason: String) {
+        val state = evaluateCurrentAudioRouteState()
+        val changed = state.label != currentAudioRouteLabel || state.isBluetoothActive != isBluetoothAudioRouteActive
+        currentAudioRouteLabel = state.label
+        isBluetoothAudioRouteActive = state.isBluetoothActive
+
+        if (changed) {
+            Log.i(
+                TAG,
+                "Audio route changed. reason=$reason, label=${state.label}, " +
+                    "bluetoothActive=${state.isBluetoothActive}"
+            )
+            notifyAudioRouteChanged()
+        }
+    }
+
+    private fun notifyAudioRouteChanged() {
+        callback?.onAudioRouteChanged(
+            routeLabel = currentAudioRouteLabel,
+            isBluetoothActive = isBluetoothAudioRouteActive,
+            isBluetoothRequired = true
+        )
+    }
+
+    private fun evaluateCurrentAudioRouteState(): AudioRouteState {
+        if (!hasBluetoothConnectPermission()) {
+            return AudioRouteState(AUDIO_ROUTE_LABEL_BT_PERMISSION_MISSING, isBluetoothActive = false)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val currentDevice = audioManager.communicationDevice
+            if (currentDevice != null) {
+                if (isBluetoothCommunicationDevice(currentDevice)) {
+                    return AudioRouteState(buildBluetoothRouteLabel(currentDevice), isBluetoothActive = true)
+                }
+                return AudioRouteState(mapNonBluetoothRouteLabel(currentDevice), isBluetoothActive = false)
+            }
+            val bluetoothAvailable = audioManager.availableCommunicationDevices.any { isBluetoothCommunicationDevice(it) }
+            return if (bluetoothAvailable) {
+                AudioRouteState(AUDIO_ROUTE_LABEL_BT_PENDING, isBluetoothActive = false)
+            } else {
+                AudioRouteState(AUDIO_ROUTE_LABEL_BT_UNAVAILABLE, isBluetoothActive = false)
+            }
+        }
+
+        val bluetoothAvailable = audioManager.getDevices(AudioManager.GET_DEVICES_ALL)
+            .any { isBluetoothCommunicationDevice(it) }
+        if (audioManager.isBluetoothScoOn && bluetoothAvailable) {
+            return AudioRouteState(AUDIO_ROUTE_LABEL_BT_ACTIVE, isBluetoothActive = true)
+        }
+        return if (bluetoothAvailable) {
+            AudioRouteState(AUDIO_ROUTE_LABEL_BT_PENDING, isBluetoothActive = false)
+        } else {
+            AudioRouteState(AUDIO_ROUTE_LABEL_BT_UNAVAILABLE, isBluetoothActive = false)
+        }
+    }
+
+    private fun updateTripAudioCaptureForRoute() {
+        if (!isTripActive) {
+            return
+        }
+
+        if (!isBluetoothAudioRouteActive) {
+            stopAudioCaptureIfNeeded(reason = "bluetooth_route_inactive")
+            speechRecognizerHelper?.stopListening()
+            return
+        }
+
+        val wasCaptureRunning = isAudioCaptureRunning
+        startAudioCaptureIfNeeded()
+        if (wasCaptureRunning) {
+            return
+        }
+        lifecycleScope.launch {
+            if (isTripActive && isBluetoothAudioRouteActive) {
+                getOrCreateSpeechRecognizerHelper().startListening()
+            }
+        }
+    }
+
+    private fun forceStopTransmissionDueToInvalidRoute(reason: String) {
+        if (!isTransmitting) {
+            return
+        }
+        isTransmitting = false
+        releaseAudioDucking()
+        sendTransmissionStateToPeer()
+        notifyTransmissionStateChanged()
+        Log.w(TAG, "Transmission forced OFF due to invalid audio route. reason=$reason")
+    }
+
+    private fun hasBluetoothConnectPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return true
+        }
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun findPreferredBluetoothCommunicationDevice(): AudioDeviceInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return null
+        }
+        return audioManager.availableCommunicationDevices
+            .firstOrNull { isBluetoothCommunicationDevice(it) }
+    }
+
+    private fun isBluetoothCommunicationDevice(device: AudioDeviceInfo): Boolean {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER -> true
+            else -> false
+        }
+    }
+
+    private fun buildBluetoothRouteLabel(device: AudioDeviceInfo): String {
+        val name = device.productName?.toString()?.trim().orEmpty()
+        return if (name.isBlank()) {
+            AUDIO_ROUTE_LABEL_BT_ACTIVE
+        } else {
+            "Bluetooth: $name"
+        }
+    }
+
+    private fun mapNonBluetoothRouteLabel(device: AudioDeviceInfo): String {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> AUDIO_ROUTE_LABEL_EARPIECE
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> AUDIO_ROUTE_LABEL_SPEAKER
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> AUDIO_ROUTE_LABEL_WIRED
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_USB_HEADSET -> AUDIO_ROUTE_LABEL_USB
+            else -> AUDIO_ROUTE_LABEL_PHONE
+        }
     }
 
     private fun boostStreamVolume(streamType: Int, ratio: Float) {
