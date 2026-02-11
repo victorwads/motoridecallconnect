@@ -6,6 +6,9 @@
 #include <fstream>
 #include <vector>
 #include <cmath>
+#include <mutex>
+#include <thread>
+#include <algorithm>
 
 #define TAG "AppNative"
 #define WHISPER_TAG "WhisperCpp"
@@ -15,6 +18,7 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
 static struct whisper_context *g_ctx = nullptr;
+static std::mutex g_ctx_mutex;
 
 static void whisper_android_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
     (void) user_data;
@@ -44,16 +48,27 @@ Java_dev_wads_motoridecallconnect_stt_WhisperLib_initModel(
     JNIEnv *env,
     jobject /* this */,
     jstring modelPathStr) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
     const char *model_path = env->GetStringUTFChars(modelPathStr, nullptr);
     LOGD("Loading model from %s", model_path);
 
     whisper_log_set(whisper_android_log_callback, nullptr);
 
+    if (g_ctx != nullptr) {
+        LOGW("Whisper context already existed. Releasing old context before re-initialization.");
+        whisper_free(g_ctx);
+        g_ctx = nullptr;
+    }
+
     struct whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = true;
     cparams.gpu_device = 0;
-    cparams.flash_attn = true;
+    // Keep flash attention disabled for stability on CPU fallback paths.
+    cparams.flash_attn = false;
+
+    LOGI("Initializing Whisper context (use_gpu=%d, gpu_device=%d, flash_attn=%d)",
+         cparams.use_gpu, cparams.gpu_device, cparams.flash_attn);
 
     g_ctx = whisper_init_from_file_with_params(model_path, cparams);
 
@@ -136,6 +151,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperLib_transcribe(
     JNIEnv *env,
     jobject /* this */,
     jstring wavPathStr) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
     if (g_ctx == nullptr) {
         return env->NewStringUTF("Error: Model not initialized");
@@ -175,20 +191,34 @@ Java_dev_wads_motoridecallconnect_stt_WhisperLib_transcribeBuffer(
     JNIEnv *env,
     jobject /* this */,
     jfloatArray floatArray) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
     if (g_ctx == nullptr) {
         return env->NewStringUTF("Error: Model not initialized");
     }
 
     jsize len = env->GetArrayLength(floatArray);
+    if (len <= 0) {
+        LOGW("transcribeBuffer: empty input");
+        return env->NewStringUTF("");
+    }
     std::vector<float> pcmf32(len);
     env->GetFloatArrayRegion(floatArray, 0, len, pcmf32.data());
     LOGD("transcribeBuffer: sampleCount=%d", (int) len);
 
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    const unsigned int hw_threads = std::thread::hardware_concurrency();
+    wparams.n_threads = std::max(1, std::min(4, hw_threads > 0 ? (int) hw_threads : 2));
+    wparams.no_context = true;
+    wparams.single_segment = true;
+    wparams.no_timestamps = true;
+    wparams.print_realtime = false;
     wparams.print_progress = false;
+    wparams.print_timestamps = false;
+    wparams.print_special = false;
     
     if (whisper_full(g_ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
+        LOGE("transcribeBuffer: whisper_full failed");
         return env->NewStringUTF("Error: Transcription failed");
     }
 
@@ -210,6 +240,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_wads_motoridecallconnect_stt_WhisperLib_free(
     JNIEnv *env,
     jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (g_ctx) {
         whisper_free(g_ctx);
         g_ctx = nullptr;

@@ -143,6 +143,11 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
     fun updateTranscript(newTranscript: String, isFinal: Boolean) {
         val state = _uiState.value
         val targetUid = state.hostUid ?: FirebaseAuth.getInstance().currentUser?.uid
+        Log.d(
+            TAG,
+            "updateTranscript(isFinal=$isFinal, tripActive=${state.isTripActive}, " +
+                "tripId=${state.currentTripId}, textLen=${newTranscript.length})"
+        )
 
         if (isFinal) {
             val tripId = state.currentTripId ?: return

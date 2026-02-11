@@ -19,6 +19,7 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         private const val TAG = "SpeechRecognizerHelper"
         private const val CAPTURE_SAMPLE_RATE_HZ = 48_000
         private const val WHISPER_SAMPLE_RATE_HZ = 16_000
+        private const val MIN_WHISPER_SAMPLES = 16_000 // 1 second at 16 kHz
     }
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -186,10 +187,29 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         }
 
         val pcm16k = downsampleToWhisperRate(pcm48k)
+        if (pcm16k.size < MIN_WHISPER_SAMPLES) {
+            Log.d(
+                TAG,
+                "Skipping tiny Whisper chunk. bytes=${data.size}, samples16k=${pcm16k.size}, " +
+                    "required=$MIN_WHISPER_SAMPLES"
+            )
+            return
+        }
+
         whisperChunkCount++
         val startMs = System.currentTimeMillis()
         val result = whisperLib.transcribeBuffer(pcm16k)
         val elapsedMs = System.currentTimeMillis() - startMs
+
+        if (result.startsWith("Error:", ignoreCase = true)) {
+            Log.e(
+                TAG,
+                "Whisper chunk #$whisperChunkCount failed. " +
+                    "samples16k=${pcm16k.size}, elapsedMs=$elapsedMs, error=$result"
+            )
+            listener.onError(result)
+            return
+        }
 
         if (result.isBlank()) {
             emptyWhisperResultCount++
@@ -205,7 +225,8 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         Log.i(
             TAG,
             "Whisper chunk #$whisperChunkCount textLen=${result.length}, " +
-                "samples16k=${pcm16k.size}, peak=${"%.3f".format(peak)}, elapsedMs=$elapsedMs"
+                "samples16k=${pcm16k.size}, peak=${"%.3f".format(peak)}, elapsedMs=$elapsedMs, " +
+                "preview=${result.take(120)}"
         )
         listener.onFinalResults(result)
     }

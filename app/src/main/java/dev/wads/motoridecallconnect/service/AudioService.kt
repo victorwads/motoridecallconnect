@@ -73,6 +73,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var totalChunksDispatched = 0L
     private var bufferedAudioDurationMs = 0L
     private var consecutiveSilenceDurationMs = 0L
+    private var chunkHadSpeech = false
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -343,6 +344,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
             if (isSpeechDetected) {
                 consecutiveSilenceDurationMs = 0L
+                chunkHadSpeech = true
             } else {
                 consecutiveSilenceDurationMs += frameDurationMs
             }
@@ -474,6 +476,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val chunk = audioBuffer.toByteArray()
         val chunkDurationMs = bufferedAudioDurationMs
         val silenceMs = consecutiveSilenceDurationMs
+        val hadSpeech = chunkHadSpeech
         resetTranscriptionState(clearAudio = true)
 
         totalChunksDispatched++
@@ -482,7 +485,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.i(
             TAG,
             "Dispatching chunk #$chunkId to STT. bytes=${chunk.size}, durationMs=$chunkDurationMs, " +
-                "silenceMs=$silenceMs, reason=$reason, whisper=${speechRecognizerHelper.isUsingWhisper}"
+                "silenceMs=$silenceMs, hadSpeech=$hadSpeech, reason=$reason, " +
+                "whisper=${speechRecognizerHelper.isUsingWhisper}"
         )
 
         transcriptionExecutor.execute {
@@ -500,5 +504,6 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         bufferedAudioDurationMs = 0L
         consecutiveSilenceDurationMs = 0L
+        chunkHadSpeech = false
     }
 }

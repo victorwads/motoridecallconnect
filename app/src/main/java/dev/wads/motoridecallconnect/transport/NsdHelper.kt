@@ -114,8 +114,11 @@ class NsdHelper(private val context: Context, private val listener: NsdListener)
                 Log.w(TAG, "Error unregistering service", e)
             }
             registrationListener = null
+            serviceName = null
         }
     }
+
+    fun getRegisteredServiceName(): String? = serviceName
 
     fun tearDown() {
         if (registrationListener != null) {
