@@ -29,9 +29,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dev.wads.motoridecallconnect.data.local.UserPreferences
+import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripScreen
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
+import dev.wads.motoridecallconnect.ui.pairing.PairingViewModel
 import dev.wads.motoridecallconnect.ui.components.AudioTestModal
 import dev.wads.motoridecallconnect.ui.login.LoginScreen
 import dev.wads.motoridecallconnect.ui.login.LoginViewModel
@@ -51,9 +53,11 @@ fun AppNavigation(
     tripHistoryViewModel: TripHistoryViewModel,
     loginViewModel: LoginViewModel,
     socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
+    pairingViewModel: PairingViewModel,
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
-    onStartDiscoveryClick: () -> Unit
+    onConnectToDevice: (Device) -> Unit,
+    onDisconnectClick: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
@@ -156,7 +160,18 @@ fun AppNavigation(
                     onStopCommandChange = { 
                         // TODO: Add specific update method to VM 
                     },
-                    onRecordingToggle = { /* TODO VM update */ }
+                    onRecordingToggle = { /* TODO VM update */ },
+                    onConnectToService = { serviceInfo ->
+                        val device = Device(
+                            id = serviceInfo.serviceName,
+                            name = serviceInfo.serviceName,
+                            deviceName = "Android Device",
+                            ip = serviceInfo.host?.hostAddress,
+                            port = serviceInfo.port
+                        )
+                        onConnectToDevice(device)
+                    },
+                    onDisconnectClick = onDisconnectClick
                 )
             }
             composable(Screen.TripHistory.route) {
@@ -193,8 +208,12 @@ fun AppNavigation(
             }
             composable(Screen.Pairing.route) {
                 PairingScreen(
+                    viewModel = pairingViewModel,
                     onNavigateBack = { navController.popBackStack() },
-                    onPairSuccess = { /* Handle success if needed */ }
+                    onConnectToDevice = { device ->
+                        onConnectToDevice(device)
+                        navController.navigate(Screen.ActiveTrip.route)
+                    }
                 )
             }
             composable(Screen.Friends.route) {

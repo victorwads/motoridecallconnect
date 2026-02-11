@@ -89,9 +89,9 @@ service cloud.firestore {
         allow get: if isOwner(uid) || isOwner(requesterUid);
         allow list: if isOwner(uid);
 
-        // create:
+        // create/update:
         // requester writes into target user's FriendRequests/{requesterUid}
-        allow create: if isOwner(requesterUid);
+        allow create, update: if isOwner(requesterUid);
 
         // delete:
         // requester can cancel; owner can remove when accepting/denying

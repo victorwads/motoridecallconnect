@@ -1,5 +1,6 @@
 package dev.wads.motoridecallconnect.ui.activetrip
 
+import android.net.nsd.NsdServiceInfo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
@@ -51,7 +53,9 @@ fun ActiveTripScreen(
     onModeChange: (OperatingMode) -> Unit,
     onStartCommandChange: (String) -> Unit,
     onStopCommandChange: (String) -> Unit,
-    onRecordingToggle: (Boolean) -> Unit
+    onRecordingToggle: (Boolean) -> Unit,
+    onConnectToService: (NsdServiceInfo) -> Unit = {},
+    onDisconnectClick: () -> Unit = {}
 ) {
     val badgeStatus = when (uiState.connectionStatus) {
         ConnectionStatus.CONNECTED -> BadgeStatus.Connected
@@ -105,8 +109,25 @@ fun ActiveTripScreen(
 
         // --- Connection Status ---
         StatusCard(title = stringResource(R.string.connection_header), icon = Icons.Default.Share) { // Placeholder for Link2
-            Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatusBadge(status = badgeStatus, label = connectionStatusLabel)
+                
+                if (uiState.connectedPeer != null && (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONNECTING)) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = uiState.connectedPeer.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "ID: ${uiState.connectedPeer.id}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
             if (badgeStatus == BadgeStatus.Disconnected) {
@@ -127,9 +148,8 @@ fun ActiveTripScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     uiState.discoveredServices.forEach { service ->
-                        // This button needs to trigger connection
                         Button(
-                            onClick = { /* TODO connection callback */ },
+                            onClick = { onConnectToService(service) },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                         ) {
                             Text(stringResource(R.string.connect_to_device_format, service.serviceName))
@@ -137,10 +157,10 @@ fun ActiveTripScreen(
                     }
                 }
                 
-            } else if (badgeStatus == BadgeStatus.Connected) {
+            } else if (badgeStatus == BadgeStatus.Connected || badgeStatus == BadgeStatus.Connecting) {
                  BigButton(
                     text = stringResource(R.string.disconnect),
-                    onClick = { /* TODO: Disconnect */ },
+                    onClick = onDisconnectClick,
                     variant = ButtonVariant.Destructive,
                     fullWidth = true
                  )
@@ -151,7 +171,7 @@ fun ActiveTripScreen(
         StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
             // Timer UI would be here
             
-            if (uiState.connectionStatus == ConnectionStatus.CONNECTED) { // Assuming trip is started if connected for now
+            if (uiState.isTripActive) {
                  BigButton(
                     text = stringResource(R.string.end_trip_action),
                     onClick = onEndTripClick,
@@ -225,6 +245,21 @@ fun ActiveTripScreen(
                     checked = uiState.isRecordingTranscript, 
                     onCheckedChange = onRecordingToggle
                 )
+            }
+        }
+
+        // --- Transcript List ---
+        if (uiState.transcript.isNotEmpty()) {
+            StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    uiState.transcript.takeLast(5).forEach { line ->
+                        Text(
+                            text = line,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (line.startsWith("Parcial:")) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
             }
         }
         

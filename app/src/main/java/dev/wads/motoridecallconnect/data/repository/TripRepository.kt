@@ -17,7 +17,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class TripRepository(private val tripDao: TripDao) {
+class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
@@ -41,7 +41,7 @@ class TripRepository(private val tripDao: TripDao) {
                 awaitClose { listenerInfo.remove() }
             }
         } else {
-            tripDao.getAllTrips()
+            tripDaoProvider().getAllTrips()
         }
     }
 
@@ -67,7 +67,7 @@ class TripRepository(private val tripDao: TripDao) {
                  awaitClose { listener.remove() }
              }
         } else {
-            tripDao.getTripWithTranscripts(tripId).map { it }
+            tripDaoProvider().getTripWithTranscripts(tripId).map { it }
         }
     }
 
@@ -81,7 +81,7 @@ class TripRepository(private val tripDao: TripDao) {
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
         } else {
-            tripDao.insertTrip(trip)
+            tripDaoProvider().insertTrip(trip)
             trip.id
         }
     }
@@ -128,7 +128,7 @@ class TripRepository(private val tripDao: TripDao) {
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
         } else {
-            tripDao.insertTranscriptLine(transcriptLine)
+            tripDaoProvider().insertTranscriptLine(transcriptLine)
         }
     }
 }

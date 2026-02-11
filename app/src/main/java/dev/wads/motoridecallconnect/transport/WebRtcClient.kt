@@ -13,6 +13,7 @@ import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
+import org.webrtc.audio.JavaAudioDeviceModule
 
 class WebRtcClient(
     context: Context,
@@ -24,10 +25,17 @@ class WebRtcClient(
     init {
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
         val options = PeerConnectionFactory.Options()
+        
+        val audioDeviceModule = JavaAudioDeviceModule.builder(context)
+            .setUseHardwareAcousticEchoCanceler(true)
+            .setUseHardwareNoiseSuppressor(true)
+            .createAudioDeviceModule()
+
         val encoderFactory = DefaultVideoEncoderFactory(null, true, true)
         val decoderFactory = DefaultVideoDecoderFactory(null)
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setOptions(options)
+            .setAudioDeviceModule(audioDeviceModule)
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
@@ -37,11 +45,15 @@ class WebRtcClient(
         iceTransportsType = PeerConnection.IceTransportsType.ALL
     }
 
-    private var peerConnection: PeerConnection? = peerConnectionFactory.createPeerConnection(rtcConfig, observer)
+    private var peerConnection: PeerConnection? = peerConnectionFactory.createPeerConnection(rtcConfig, observer).apply {
+        // Add existing tracks if any
+    }
 
     private val audioConstraints = MediaConstraints()
     private val audioSource: AudioSource? = peerConnectionFactory.createAudioSource(audioConstraints)
-    val localAudioTrack: AudioTrack? = peerConnectionFactory.createAudioTrack("local_audio_track", audioSource)
+    val localAudioTrack: AudioTrack? = peerConnectionFactory.createAudioTrack("local_audio_track", audioSource).apply {
+        peerConnection?.addTrack(this)
+    }
 
     fun createOffer(sdpObserver: SdpObserver) {
         val constraints = MediaConstraints()

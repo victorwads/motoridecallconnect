@@ -53,6 +53,11 @@ dependencies {
 
     implementation(libs.webrtc)
     implementation(libs.gson)
+    implementation(libs.zxing)
+    implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.camera2)
 
     // Firebase
     implementation(platform(libs.firebase.bom))
@@ -75,6 +80,7 @@ dependencies {
 
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.service)
     implementation(libs.androidx.navigation.compose)
 
     testImplementation(libs.junit)

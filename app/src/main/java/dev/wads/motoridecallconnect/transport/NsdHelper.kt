@@ -23,7 +23,7 @@ class NsdHelper(private val context: Context, private val listener: NsdListener)
         const val TAG = "NsdHelper"
     }
 
-    fun registerService(port: Int) {
+    fun registerService(port: Int, customName: String = "MotoRideConnect") {
         registrationListener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(nsdServiceInfo: NsdServiceInfo) {
                 serviceName = nsdServiceInfo.serviceName
@@ -44,7 +44,7 @@ class NsdHelper(private val context: Context, private val listener: NsdListener)
         }
 
         val serviceInfo = NsdServiceInfo().apply {
-            this.serviceName = "MotoRideConnect"
+            this.serviceName = customName
             this.serviceType = SERVICE_TYPE
             this.port = port
         }
@@ -97,7 +97,23 @@ class NsdHelper(private val context: Context, private val listener: NsdListener)
 
     fun stopDiscovery() {
         if (discoveryListener != null) {
-            nsdManager.stopServiceDiscovery(discoveryListener)
+            try {
+                nsdManager.stopServiceDiscovery(discoveryListener)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping discovery", e)
+            }
+            discoveryListener = null
+        }
+    }
+
+    fun unregisterService() {
+        if (registrationListener != null) {
+            try {
+                nsdManager.unregisterService(registrationListener)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering service", e)
+            }
+            registrationListener = null
         }
     }
 

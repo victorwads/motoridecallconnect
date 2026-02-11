@@ -3,28 +3,32 @@ package dev.wads.motoridecallconnect.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.net.nsd.NsdServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
+import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.transport.SignalingClient
 import dev.wads.motoridecallconnect.transport.WebRtcClient
+import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.vad.SimpleVad
+import kotlinx.coroutines.launch
 import org.webrtc.*
+import java.net.InetAddress
 
-class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
+class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
 
     private val binder = LocalBinder()
     private val CHANNEL_ID = "AudioServiceChannel"
@@ -44,9 +48,14 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
     private var startCommand = "iniciar"
     private var stopCommand = "parar"
     private var isTransmitting = false
+    private var isTripActive = false
+    private var connectedPeer: Device? = null
+    private val audioBuffer = mutableListOf<Byte>()
+    private var lastTransmissionTime = 0L
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
+        fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
     }
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
@@ -54,7 +63,19 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
              signalingClient.sendMessage("ICE:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${candidate.sdp.replace("\n", "|")}")
         }
         override fun onDataChannel(p0: DataChannel?) {}
-        override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
+        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+            Log.d("AudioService", "IceConnectionChange: $state")
+            val status = when (state) {
+                PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> 
+                    ConnectionStatus.CONNECTED
+                PeerConnection.IceConnectionState.CHECKING -> 
+                    ConnectionStatus.CONNECTING
+                PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED, PeerConnection.IceConnectionState.CLOSED -> 
+                    ConnectionStatus.DISCONNECTED
+                else -> ConnectionStatus.DISCONNECTED
+            }
+            callback?.onConnectionStatusChanged(status, connectedPeer)
+        }
         override fun onIceConnectionReceivingChange(p0: Boolean) {}
         override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
         override fun onAddStream(p0: MediaStream?) { Log.d("AudioService", "Received remote stream") }
@@ -81,11 +102,17 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         val notification = createNotification()
         startForeground(1, notification)
         audioCapturer.startCapture()
+        
+        lifecycleScope.launch {
+            speechRecognizerHelper.downloadModelIfNeeded()
+        }
+
         speechRecognizerHelper.startListening()
-        signalingClient.startServer(8080) // Same fixed port for now
+        signalingClient.startServer(8080) 
         return START_STICKY
     }
 
@@ -103,16 +130,32 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
         this.callback = callback
     }
 
-    fun connectToPeer(serviceInfo: NsdServiceInfo) {
-        signalingClient.connectToPeer(serviceInfo.host, serviceInfo.port)
-        // TODO: Once connected, create WebRTC PeerConnection and send offer
+    fun connectToPeer(device: Device) {
+        connectedPeer = device
+        callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTING, device)
+        if (device.ip != null && device.port != null) {
+            signalingClient.connectToPeer(InetAddress.getByName(device.ip), device.port)
+        }
     }
 
-    fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String) {
+    fun disconnect() {
+        signalingClient.close()
+        webRtcClient.close()
+        // Re-initialize for next potential connection
+        signalingClient = SignalingClient(this)
+        webRtcClient = WebRtcClient(this, peerConnectionObserver)
+        connectedPeer = null
+        callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.DISCONNECTED, null)
+        signalingClient.startServer(8080)
+    }
+
+    fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean) {
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
-        Log.d("AudioService", "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd")
+        isTripActive = tripActive
+        Log.d("AudioService", "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
+        
         if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
             isTransmitting = true
             requestAudioDucking()
@@ -126,7 +169,8 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
 
     // --- SignalingListener Callbacks ---
     override fun onPeerConnected() {
-        Log.d("AudioService", "Peer connected, creating offer")
+        Log.d("AudioService", "Peer connected, sending name and creating offer")
+        signalingClient.sendMessage("NAME:${Build.MODEL}")
         webRtcClient.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 webRtcClient.setLocalDescription(this, sdp)
@@ -136,6 +180,16 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
             override fun onCreateFailure(p0: String?) {}
             override fun onSetFailure(p0: String?) {}
         })
+    }
+
+    override fun onPeerInfoReceived(name: String) {
+        Log.d("AudioService", "Peer info received: $name")
+        if (connectedPeer == null) {
+            connectedPeer = Device(id = name, name = name, deviceName = name)
+        } else {
+            connectedPeer = connectedPeer?.copy(name = name, deviceName = name)
+        }
+        callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTING, connectedPeer)
     }
 
     override fun onOfferReceived(description: String) {
@@ -183,27 +237,42 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
 
     // --- AudioCapturerListener Callbacks ---
     override fun onAudioData(data: ByteArray, size: Int) {
-        when (currentMode) {
-            OperatingMode.VOICE_ACTIVITY_DETECTION -> {
-                if (vad.isSpeech(data.sliceArray(0 until size))) {
-                    if (!isTransmitting) {
-                        isTransmitting = true
-                        requestAudioDucking()
-                        Log.i("AudioService", "Speech detected. Transmission ON.")
-                    }
-                } else {
-                    if (isTransmitting) {
-                        isTransmitting = false
-                        releaseAudioDucking()
-                        Log.i("AudioService", "Silence detected. Transmission OFF.")
-                    }
+        val currentData = data.sliceArray(0 until size)
+        
+        // 1. Handle Intercom Transmission (VAD Logic)
+        if (currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
+            if (vad.isSpeech(currentData)) {
+                if (!isTransmitting) {
+                    isTransmitting = true
+                    requestAudioDucking()
+                    Log.i("AudioService", "Speech detected. Transmission ON.")
+                }
+            } else {
+                if (isTransmitting) {
+                    isTransmitting = false
+                    releaseAudioDucking()
+                    Log.i("AudioService", "Silence detected. Transmission OFF.")
                 }
             }
-            else -> { /* Do nothing for other modes here */ }
         }
 
-        if (isTransmitting) {
-            // TODO: Send audio data via WebRTC
+        // 2. Handle Transcription Recording
+        // We accumulate audio if trip is active, prioritizing Whisper if available
+        if (isTripActive) {
+            audioBuffer.addAll(currentData.toList())
+            
+            // To avoid huge buffers, we process chunks
+            // VAD and VOICE_COMMAND trigger on silence, CONTINUOUS triggers on time
+            val isSilence = !vad.isSpeech(currentData)
+            val shouldProcess = when (currentMode) {
+                OperatingMode.CONTINUOUS_TRANSMISSION -> audioBuffer.size > 16000 * 2 * 4 // 4s
+                else -> isSilence && audioBuffer.size > 16000 * 2 * 1 // 1s min
+            }
+
+            if (shouldProcess && audioBuffer.isNotEmpty()) {
+                speechRecognizerHelper.processAudio(audioBuffer.toByteArray())
+                audioBuffer.clear()
+            }
         }
     }
 
@@ -217,6 +286,18 @@ class AudioService : Service(), AudioCapturer.AudioCapturerListener, SpeechRecog
         if (currentMode == OperatingMode.VOICE_COMMAND) {
             handleVoiceCommand(results)
         }
+    }
+
+    override fun onModelDownloadStarted() {
+        Log.i("AudioService", "Model download started")
+    }
+
+    override fun onModelDownloadProgress(progress: Int) {
+        Log.d("AudioService", "Model download progress: $progress%")
+    }
+
+    override fun onModelDownloadFinished(success: Boolean) {
+        Log.i("AudioService", "Model download finished: Success=$success")
     }
 
     override fun onError(error: String) {

@@ -18,6 +18,7 @@ class SignalingClient(private val listener: SignalingListener) {
 
     interface SignalingListener {
         fun onPeerConnected()
+        fun onPeerInfoReceived(name: String)
         fun onOfferReceived(description: String)
         fun onAnswerReceived(description: String)
         fun onIceCandidateReceived(candidate: String)
@@ -63,6 +64,7 @@ class SignalingClient(private val listener: SignalingListener) {
             while (true) {
                 val message = reader.readLine() ?: break
                 when {
+                    message.startsWith("NAME:") -> listener.onPeerInfoReceived(message.substringAfter("NAME:"))
                     message.startsWith("OFFER:") -> listener.onOfferReceived(message.substringAfter("OFFER:"))
                     message.startsWith("ANSWER:") -> listener.onAnswerReceived(message.substringAfter("ANSWER:"))
                     message.startsWith("ICE:") -> listener.onIceCandidateReceived(message.substringAfter("ICE:"))

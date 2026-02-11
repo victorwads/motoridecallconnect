@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
 import android.os.IBinder
@@ -12,6 +13,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -23,12 +26,12 @@ import dev.wads.motoridecallconnect.transport.NsdHelper
 import dev.wads.motoridecallconnect.ui.common.ViewModelFactory
 import dev.wads.motoridecallconnect.ui.navigation.AppNavigation
 import dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme
+import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.ServiceCallback {
+class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     private var audioService: AudioService? = null
     private var isBound = false
-    private lateinit var nsdHelper: NsdHelper
 
     private val database by lazy {
         Room.databaseBuilder(
@@ -36,25 +39,38 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
             AppDatabase::class.java, "motoride_database"
         ).build()
     }
-    private val repository by lazy { TripRepository(database.tripDao()) }
+    private val repository by lazy { TripRepository { database.tripDao() } }
     private val socialRepository by lazy { dev.wads.motoridecallconnect.data.repository.SocialRepository() }
-    private val viewModelFactory by lazy { ViewModelFactory(repository, socialRepository) }
+    private val deviceDiscoveryRepository by lazy { dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository(applicationContext) }
+    private val viewModelFactory by lazy { ViewModelFactory(repository, socialRepository, deviceDiscoveryRepository) }
 
     private val activeTripViewModel by viewModels<dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel> { viewModelFactory }
     private val tripHistoryViewModel by viewModels<dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel> { viewModelFactory }
     private val loginViewModel by viewModels<dev.wads.motoridecallconnect.ui.login.LoginViewModel> { viewModelFactory }
     private val socialViewModel by viewModels<dev.wads.motoridecallconnect.ui.social.SocialViewModel> { viewModelFactory }
+    private val pairingViewModel by viewModels<dev.wads.motoridecallconnect.ui.pairing.PairingViewModel> { viewModelFactory }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
             val binder = service as AudioService.LocalBinder
-            audioService = binder.getService()
+            val boundService = binder.getService()
+            audioService = boundService
             isBound = true
-            audioService?.registerCallback(this@MainActivity)
+            boundService.registerCallback(this@MainActivity)
+            
+            // Sync current state to newly connected service
+            val state = activeTripViewModel.uiState.value
+            boundService.updateConfiguration(
+                state.operatingMode,
+                state.startCommand,
+                state.stopCommand,
+                state.isTripActive
+            )
         }
 
         override fun onServiceDisconnected(arg0: ComponentName) {
             isBound = false
+            audioService = null
         }
     }
 
@@ -68,14 +84,29 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        nsdHelper = NsdHelper(this, this)
+
+        lifecycleScope.launch {
+            socialRepository.updateMyPublicProfile()
+        }
 
         setContent {
             MotoRideCallConnectTheme {
                 val uiState by activeTripViewModel.uiState.collectAsState()
+                val isHosting by pairingViewModel.isHosting.collectAsState()
 
-                LaunchedEffect(uiState.operatingMode, uiState.startCommand, uiState.stopCommand) {
-                    audioService?.updateConfiguration(uiState.operatingMode, uiState.startCommand, uiState.stopCommand)
+                LaunchedEffect(uiState.operatingMode, uiState.startCommand, uiState.stopCommand, uiState.isTripActive) {
+                    audioService?.updateConfiguration(
+                        uiState.operatingMode, 
+                        uiState.startCommand, 
+                        uiState.stopCommand,
+                        uiState.isTripActive
+                    )
+                }
+
+                LaunchedEffect(isHosting) {
+                    if (isHosting) {
+                        requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
                 }
 
                 AppNavigation(
@@ -83,9 +114,25 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
                     tripHistoryViewModel = tripHistoryViewModel,
                     loginViewModel = loginViewModel,
                     socialViewModel = socialViewModel,
-                    onStartTripClick = { requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
-                    onEndTripClick = { stopAndUnbindAudioService() },
-                    onStartDiscoveryClick = { nsdHelper.discoverServices() }
+                    pairingViewModel = pairingViewModel,
+                    onStartTripClick = { 
+                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            startAndBindAudioService()
+                        } else {
+                            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                        activeTripViewModel.startTrip()
+                    },
+                    onEndTripClick = { 
+                        stopAndUnbindAudioService()
+                        activeTripViewModel.endTrip()
+                    },
+                    onConnectToDevice = { device ->
+                        audioService?.connectToPeer(device)
+                    },
+                    onDisconnectClick = {
+                        audioService?.disconnect()
+                    }
                 )
             }
         }
@@ -96,7 +143,6 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
             startService(intent)
             bindService(intent, connection, Context.BIND_AUTO_CREATE)
         }
-        nsdHelper.registerService(8080) // Using a fixed port for now
     }
 
     private fun stopAndUnbindAudioService() {
@@ -106,7 +152,6 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
         Intent(this, AudioService::class.java).also { intent ->
             stopService(intent)
         }
-        nsdHelper.tearDown()
     }
 
     override fun onTranscriptUpdate(transcript: String, isFinal: Boolean) {
@@ -115,22 +160,20 @@ class MainActivity : ComponentActivity(), NsdHelper.NsdListener, AudioService.Se
         }
     }
 
-    override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-        activeTripViewModel.addService(serviceInfo)
-    }
-
-    override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-        activeTripViewModel.removeService(serviceInfo)
+    override fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: dev.wads.motoridecallconnect.data.model.Device?) {
+        runOnUiThread {
+            activeTripViewModel.onConnectionStatusChanged(status, peer)
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        nsdHelper.discoverServices()
+        deviceDiscoveryRepository.startDiscovery()
     }
 
     override fun onPause() {
         super.onPause()
-        nsdHelper.stopDiscovery()
+        deviceDiscoveryRepository.stopDiscovery()
     }
 
     override fun onDestroy() {

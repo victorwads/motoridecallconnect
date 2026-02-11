@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Whisper models
+app/src/main/assets/models/*.bin
