@@ -20,6 +20,7 @@ import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
@@ -31,6 +32,7 @@ import dev.wads.motoridecallconnect.vad.SimpleVad
 import kotlinx.coroutines.launch
 import org.webrtc.*
 import java.net.InetAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -39,6 +41,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     companion object {
         private const val TAG = "AudioService"
+        private const val CONTROL_CHANNEL_LABEL = "trip-control"
         private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
         private const val AUDIO_SAMPLE_RATE_HZ = 48_000
         private const val AUDIO_BYTES_PER_SAMPLE = 2
@@ -71,6 +74,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isTripActive = false
     private var currentTripId: String? = null
     private var currentTripHostUid: String? = null
+    private var currentTripPath: String? = null
     private var connectedPeer: Device? = null
     private var connectionStatus = ConnectionStatus.DISCONNECTED
     private val audioBuffer = mutableListOf<Byte>()
@@ -85,11 +89,19 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isHostingEnabled = false
     private var sttEngine = SttEngine.WHISPER
     private var whisperModelId = WhisperModelCatalog.defaultOption.id
+    private var isRtcConnected = false
+    private var controlDataChannel: DataChannel? = null
+    private var pendingTripStatusSync = false
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
         fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
-        fun onTripStatusChanged(isActive: Boolean, tripId: String? = null, hostUid: String? = null)
+        fun onTripStatusChanged(
+            isActive: Boolean,
+            tripId: String? = null,
+            hostUid: String? = null,
+            tripPath: String? = null
+        )
         fun onModelDownloadProgress(progress: Int)
         fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
     }
@@ -100,20 +112,30 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                  "ICE64:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${encodeSignalPayload(candidate.sdp)}"
              )
         }
-        override fun onDataChannel(p0: DataChannel?) {}
+        override fun onDataChannel(channel: DataChannel?) {
+            if (channel == null) {
+                return
+            }
+            attachControlDataChannel(channel, source = "remote")
+        }
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             Log.d("AudioService", "IceConnectionChange: $state")
-            connectionStatus = when (state) {
-                PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> 
-                    ConnectionStatus.CONNECTED
-                PeerConnection.IceConnectionState.CHECKING -> 
-                    ConnectionStatus.CONNECTING
-                PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED, PeerConnection.IceConnectionState.CLOSED -> 
-                    ConnectionStatus.DISCONNECTED
+            val status = when (state) {
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED -> ConnectionStatus.CONNECTED
+                PeerConnection.IceConnectionState.CHECKING -> ConnectionStatus.CONNECTING
+                PeerConnection.IceConnectionState.FAILED,
+                PeerConnection.IceConnectionState.DISCONNECTED,
+                PeerConnection.IceConnectionState.CLOSED -> ConnectionStatus.DISCONNECTED
                 else -> ConnectionStatus.DISCONNECTED
             }
+            isRtcConnected = status == ConnectionStatus.CONNECTED
+            connectionStatus = status
             syncOutgoingAudioState(reason = "ice_state_change")
             callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+            if (isRtcConnected && pendingTripStatusSync) {
+                sendTripStatusToPeer()
+            }
         }
         override fun onIceConnectionReceivingChange(p0: Boolean) {}
         override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
@@ -166,6 +188,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         speechRecognizerHelper?.destroy()
         speechRecognizerHelper = null
         audioCapturer.shutdown()
+        clearControlDataChannel()
         webRtcClient.close()
         signalingClient.close()
     }
@@ -174,7 +197,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         this.callback = callback
         // Update immediately with current state
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
-        callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid)
+        callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
     }
 
     fun connectToPeer(device: Device) {
@@ -204,11 +227,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     fun disconnect() {
         resetSignalingClient(startServer = isHostingEnabled)
+        clearControlDataChannel()
         webRtcClient.close()
         // Re-initialize for next potential connection
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         connectedPeer = null
         connectionStatus = ConnectionStatus.DISCONNECTED
+        isRtcConnected = false
+        pendingTripStatusSync = false
         setTransmitting(false, reason = "disconnect")
         syncOutgoingAudioState(reason = "disconnect_recreate_webrtc")
         callback?.onConnectionStatusChanged(connectionStatus, null)
@@ -239,8 +265,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         tripActive: Boolean,
         tripId: String? = null,
         tripHostUid: String? = null,
+        tripPath: String? = null,
         propagateTripStatus: Boolean = true
     ) {
+        val previousTripId = currentTripId
+        val previousTripHostUid = currentTripHostUid
+        val previousTripPath = currentTripPath
         val resolvedModelId = WhisperModelCatalog.findById(modelId)?.id
             ?: WhisperModelCatalog.defaultOption.id
         val normalizedTripId = when {
@@ -253,10 +283,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             !tripHostUid.isNullOrBlank() -> tripHostUid
             else -> currentTripHostUid
         }
+        val normalizedTripPath = when {
+            !tripActive -> null
+            !tripPath.isNullOrBlank() -> tripPath
+            else -> buildTripPath(normalizedTripHostUid, normalizedTripId)
+        }
         val tripChanged =
             isTripActive != tripActive ||
                 currentTripId != normalizedTripId ||
-                currentTripHostUid != normalizedTripHostUid
+                currentTripHostUid != normalizedTripHostUid ||
+                currentTripPath != normalizedTripPath
         val wasTripActive = isTripActive
         val engineChanged = this.sttEngine != sttEngine
         val modelChanged = whisperModelId != resolvedModelId
@@ -269,6 +305,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         isTripActive = tripActive
         currentTripId = normalizedTripId
         currentTripHostUid = normalizedTripHostUid
+        currentTripPath = normalizedTripPath
 
         if (resolvedModelId != modelId) {
             Log.w(TAG, "Unknown whisper model '$modelId'. Falling back to '$resolvedModelId'.")
@@ -328,7 +365,21 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (tripChanged) {
             Log.i(TAG, "Trip status changed locally. isTripActive=$isTripActive, tripId=$tripId")
             if (propagateTripStatus) {
-                sendTripStatusToPeer()
+                if (tripActive) {
+                    sendTripStatusToPeer(
+                        active = true,
+                        tripId = normalizedTripId,
+                        hostUid = normalizedTripHostUid,
+                        tripPath = normalizedTripPath
+                    )
+                } else {
+                    sendTripStatusToPeer(
+                        active = false,
+                        tripId = previousTripId,
+                        hostUid = previousTripHostUid,
+                        tripPath = previousTripPath
+                    )
+                }
             }
         }
         if (modelChanged) {
@@ -361,8 +412,13 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         signalingClient.sendMessage("NAME:${buildPeerInfoPayload()}")
-        sendTripStatusToPeer()
         if (isInitiator) {
+            val localControlChannel = webRtcClient.createDataChannel(CONTROL_CHANNEL_LABEL)
+            if (localControlChannel != null) {
+                attachControlDataChannel(localControlChannel, source = "local")
+            } else {
+                Log.w(TAG, "Failed to create local control data channel.")
+            }
             webRtcClient.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription) {
                     webRtcClient.setLocalDescription(this, sdp)
@@ -380,6 +436,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
                 }
             })
+        }
+        if (isTripActive) {
+            sendTripStatusToPeer()
         }
         syncOutgoingAudioState(reason = "peer_connected")
     }
@@ -463,41 +522,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
-    override fun onTripStatusReceived(active: Boolean, tripId: String?, hostUid: String?) {
-        Log.i(TAG, "Remote trip status received. active=$active, id=$tripId, hostUid=$hostUid")
-        val normalizedTripId = when {
-            !active -> null
-            !tripId.isNullOrBlank() -> tripId
-            else -> currentTripId
-        }
-        val normalizedHostUid = when {
-            !active -> null
-            !hostUid.isNullOrBlank() -> hostUid
-            else -> currentTripHostUid
-        }
-        val hasChanged =
-            isTripActive != active ||
-                currentTripId != normalizedTripId ||
-                currentTripHostUid != normalizedHostUid
-        if (!hasChanged) {
-            return
-        }
-        updateConfiguration(
-            mode = currentMode,
-            startCmd = startCommand,
-            stopCmd = stopCommand,
-            sttEngine = sttEngine,
-            modelId = whisperModelId,
-            tripActive = active,
-            tripId = normalizedTripId,
-            tripHostUid = normalizedHostUid,
-            propagateTripStatus = false
-        )
-        callback?.onTripStatusChanged(active, normalizedTripId, normalizedHostUid)
+    override fun onTripStatusReceived(active: Boolean, tripId: String?, hostUid: String?, tripPath: String?) {
+        applyRemoteTripStatus(active, tripId, hostUid, tripPath, source = "signaling")
     }
 
     override fun onPeerDisconnected() {
         Log.w(TAG, "Signaling peer disconnected")
+        if (isRtcConnected) {
+            restartSignalingServer()
+            return
+        }
         connectionStatus = ConnectionStatus.DISCONNECTED
         syncOutgoingAudioState(reason = "peer_disconnected")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
@@ -506,6 +540,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     override fun onSignalingError(error: Throwable) {
         Log.e(TAG, "Signaling error", error)
+        if (isRtcConnected) {
+            restartSignalingServer()
+            return
+        }
         connectionStatus = ConnectionStatus.ERROR
         syncOutgoingAudioState(reason = "signaling_error")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
@@ -643,8 +681,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun shouldEnableOutgoingAudio(): Boolean {
-        val signalingConnected = connectionStatus == ConnectionStatus.CONNECTED
-        return isTripActive && isTransmitting && signalingConnected
+        return isTripActive && isTransmitting && isRtcConnected
     }
 
     private fun syncOutgoingAudioState(reason: String) {
@@ -788,17 +825,176 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         resetSignalingClient(startServer = isHostingEnabled)
     }
 
-    private fun sendTripStatusToPeer() {
-        if (connectionStatus == ConnectionStatus.DISCONNECTED || connectionStatus == ConnectionStatus.ERROR) {
+    private fun sendTripStatusToPeer(
+        active: Boolean = isTripActive,
+        tripId: String? = currentTripId,
+        hostUid: String? = currentTripHostUid,
+        tripPath: String? = currentTripPath
+    ) {
+        val resolvedTripPath = tripPath ?: buildTripPath(hostUid, tripId)
+        val message = if (active) {
+            "TRIP:START:${tripId.orEmpty()}:${hostUid.orEmpty()}:${resolvedTripPath.orEmpty()}"
+        } else {
+            "TRIP:STOP:${tripId.orEmpty()}:${hostUid.orEmpty()}:${resolvedTripPath.orEmpty()}"
+        }
+
+        val sentByDataChannel = sendControlMessage(message)
+        pendingTripStatusSync = !sentByDataChannel && active
+
+        val canSendBySignaling =
+            connectionStatus != ConnectionStatus.DISCONNECTED && connectionStatus != ConnectionStatus.ERROR
+        if (canSendBySignaling) {
+            signalingClient.sendMessage(message)
+        }
+        Log.i(
+            TAG,
+            "Sent trip status. message=$message, viaDataChannel=$sentByDataChannel, " +
+                "viaSignaling=$canSendBySignaling, pendingTripStatusSync=$pendingTripStatusSync"
+        )
+    }
+
+    private fun sendControlMessage(message: String): Boolean {
+        val channel = controlDataChannel ?: return false
+        if (channel.state() != DataChannel.State.OPEN) {
+            return false
+        }
+        val payload = message.toByteArray(Charsets.UTF_8)
+        val sent = channel.send(DataChannel.Buffer(ByteBuffer.wrap(payload), false))
+        if (!sent) {
+            Log.w(TAG, "Failed to send control message via data channel: $message")
+        }
+        return sent
+    }
+
+    private fun attachControlDataChannel(channel: DataChannel, source: String) {
+        if (controlDataChannel === channel) {
             return
         }
-        if (isTripActive) {
-            signalingClient.sendMessage(
-                "TRIP:START:${currentTripId.orEmpty()}:${currentTripHostUid.orEmpty()}"
-            )
-        } else {
-            signalingClient.sendMessage("TRIP:STOP")
+        clearControlDataChannel()
+        controlDataChannel = channel
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) = Unit
+
+            override fun onStateChange() {
+                val state = channel.state()
+                Log.i(TAG, "Control data channel state=$state source=$source")
+                if (state == DataChannel.State.OPEN && pendingTripStatusSync) {
+                    sendTripStatusToPeer()
+                }
+            }
+
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                val messageBytes = ByteArray(buffer.data.remaining())
+                buffer.data.get(messageBytes)
+                val message = String(messageBytes, Charsets.UTF_8).trim()
+                if (message.isBlank()) {
+                    return
+                }
+                handleControlChannelMessage(message)
+            }
+        })
+    }
+
+    private fun clearControlDataChannel() {
+        val channel = controlDataChannel ?: return
+        try {
+            channel.unregisterObserver()
+        } catch (_: Throwable) {
         }
+        try {
+            channel.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            channel.dispose()
+        } catch (_: Throwable) {
+        }
+        controlDataChannel = null
+    }
+
+    private fun handleControlChannelMessage(message: String) {
+        when {
+            message.startsWith("TRIP:START") -> {
+                val parts = message.split(":", limit = 5)
+                val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+                val hostUid = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+                val tripPath = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                applyRemoteTripStatus(true, tripId, hostUid, tripPath, source = "data_channel")
+            }
+            message.startsWith("TRIP:STOP") -> {
+                val parts = message.split(":", limit = 5)
+                val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+                val hostUid = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+                val tripPath = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                applyRemoteTripStatus(false, tripId, hostUid, tripPath, source = "data_channel")
+            }
+            else -> {
+                Log.d(TAG, "Ignoring unknown control message: $message")
+            }
+        }
+    }
+
+    private fun applyRemoteTripStatus(
+        active: Boolean,
+        tripId: String?,
+        hostUid: String?,
+        tripPath: String?,
+        source: String
+    ) {
+        Log.i(
+            TAG,
+            "Remote trip status received via $source. active=$active, id=$tripId, " +
+                "hostUid=$hostUid, tripPath=$tripPath"
+        )
+        val pathParts = parseTripPath(tripPath)
+        val incomingTripId = tripId ?: pathParts.second
+        val incomingHostUid = hostUid ?: pathParts.first
+        if (!active) {
+            if (!incomingTripId.isNullOrBlank() && !currentTripId.isNullOrBlank() && incomingTripId != currentTripId) {
+                return
+            }
+            if (!incomingHostUid.isNullOrBlank() && !currentTripHostUid.isNullOrBlank() && incomingHostUid != currentTripHostUid) {
+                return
+            }
+        }
+        val normalizedTripId = when {
+            !active -> null
+            !tripId.isNullOrBlank() -> tripId
+            !pathParts.second.isNullOrBlank() -> pathParts.second
+            else -> currentTripId
+        }
+        val normalizedHostUid = when {
+            !active -> null
+            !hostUid.isNullOrBlank() -> hostUid
+            !pathParts.first.isNullOrBlank() -> pathParts.first
+            else -> currentTripHostUid
+        }
+        val normalizedTripPath = when {
+            !active -> null
+            !tripPath.isNullOrBlank() -> tripPath
+            else -> buildTripPath(normalizedHostUid, normalizedTripId)
+        }
+        val hasChanged =
+            isTripActive != active ||
+                currentTripId != normalizedTripId ||
+                currentTripHostUid != normalizedHostUid ||
+                currentTripPath != normalizedTripPath
+        if (!hasChanged) {
+            return
+        }
+        updateConfiguration(
+            mode = currentMode,
+            startCmd = startCommand,
+            stopCmd = stopCommand,
+            sttEngine = sttEngine,
+            modelId = whisperModelId,
+            tripActive = active,
+            tripId = normalizedTripId,
+            tripHostUid = normalizedHostUid,
+            tripPath = normalizedTripPath,
+            propagateTripStatus = false
+        )
+        callback?.onTripStatusChanged(active, normalizedTripId, normalizedHostUid, normalizedTripPath)
     }
 
     private fun resetSignalingClient(startServer: Boolean) {
@@ -837,6 +1033,31 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         } else {
             null to raw
         }
+    }
+
+    private fun buildTripPath(hostUid: String?, tripId: String?): String? {
+        val normalizedHostUid = hostUid?.trim().orEmpty()
+        val normalizedTripId = tripId?.trim().orEmpty()
+        if (normalizedHostUid.isBlank() || normalizedTripId.isBlank()) {
+            return null
+        }
+        return "${FirestorePaths.ACCOUNTS}/$normalizedHostUid/${FirestorePaths.RIDES}/$normalizedTripId"
+    }
+
+    private fun parseTripPath(path: String?): Pair<String?, String?> {
+        if (path.isNullOrBlank()) {
+            return null to null
+        }
+        val segments = path.trim().split("/")
+        if (segments.size < 4) {
+            return null to null
+        }
+        if (segments[0] != FirestorePaths.ACCOUNTS || segments[2] != FirestorePaths.RIDES) {
+            return null to null
+        }
+        val hostUid = segments[1].takeIf { it.isNotBlank() }
+        val tripId = segments[3].takeIf { it.isNotBlank() }
+        return hostUid to tripId
     }
 
     private fun getOrCreateSpeechRecognizerHelper(): SpeechRecognizerHelper {

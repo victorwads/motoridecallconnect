@@ -38,7 +38,12 @@ class SignalingClient(private val listener: SignalingListener) {
         fun onOfferReceived(description: String)
         fun onAnswerReceived(description: String)
         fun onIceCandidateReceived(candidate: String)
-        fun onTripStatusReceived(active: Boolean, tripId: String? = null, hostUid: String? = null)
+        fun onTripStatusReceived(
+            active: Boolean,
+            tripId: String? = null,
+            hostUid: String? = null,
+            tripPath: String? = null
+        )
         fun onSignalingError(error: Throwable)
     }
 
@@ -147,12 +152,19 @@ class SignalingClient(private val listener: SignalingListener) {
                 }
                 message.startsWith("ICE:") -> listener.onIceCandidateReceived(message.substringAfter("ICE:"))
                 message.startsWith("TRIP:START") -> {
-                    val parts = message.split(":", limit = 4)
+                    val parts = message.split(":", limit = 5)
                     val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
                     val hostUid = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
-                    listener.onTripStatusReceived(true, tripId, hostUid)
+                    val tripPath = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                    listener.onTripStatusReceived(true, tripId, hostUid, tripPath)
                 }
-                message.startsWith("TRIP:STOP") -> listener.onTripStatusReceived(false)
+                message.startsWith("TRIP:STOP") -> {
+                    val parts = message.split(":", limit = 5)
+                    val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+                    val hostUid = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+                    val tripPath = parts.getOrNull(4)?.takeIf { it.isNotBlank() }
+                    listener.onTripStatusReceived(false, tripId, hostUid, tripPath)
+                }
             }
             Log.d(TAG, "Received message: $message")
         }

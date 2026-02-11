@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import dev.wads.motoridecallconnect.data.model.TranscriptLine
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -35,6 +36,7 @@ data class ActiveTripUiState(
     val currentTripId: String? = null,
     val tripStartTime: Long? = null,
     val hostUid: String? = null,
+    val tripPath: String? = null,
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val connectedPeer: Device? = null,
     val transcript: List<String> = emptyList(),
@@ -54,10 +56,12 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
     private var activeTrip: dev.wads.motoridecallconnect.data.model.Trip? = null
     private var transcriptJob: Job? = null
 
-    fun startTrip(remoteTripId: String? = null, hostId: String? = null) {
-        val tripId = remoteTripId ?: UUID.randomUUID().toString()
+    fun startTrip(remoteTripId: String? = null, hostId: String? = null, remoteTripPath: String? = null) {
+        val parsedTripPath = parseTripPath(remoteTripPath)
+        val tripId = remoteTripId ?: parsedTripPath.second ?: UUID.randomUUID().toString()
         val myUid = FirebaseAuth.getInstance().currentUser?.uid
-        val targetHostUid = hostId ?: myUid
+        val targetHostUid = hostId ?: parsedTripPath.first ?: myUid
+        val tripPath = remoteTripPath?.takeIf { it.isNotBlank() } ?: buildTripPath(targetHostUid, tripId)
         val selectedPeer = _uiState.value.connectedPeer
         val connectedPeerUid = selectedPeer?.id?.takeIf { it.isNotBlank() }
         val participants = listOfNotNull(
@@ -82,10 +86,11 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             tripStartTime = now,
             currentTripId = tripId,
             hostUid = targetHostUid,
+            tripPath = tripPath,
             transcript = emptyList()
         ) }
 
-        if (hostId == null || hostId == myUid) {
+        if (targetHostUid == myUid) {
             viewModelScope.launch {
                 repository.insertTrip(trip)
             }
@@ -93,9 +98,11 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
         // Subscribe to shared transcriptions
         transcriptJob?.cancel()
-        if (targetHostUid != null) {
+        val subscribeHostUid = parsedTripPath.first ?: targetHostUid
+        val subscribeTripId = parsedTripPath.second ?: tripId
+        if (!subscribeHostUid.isNullOrBlank() && subscribeTripId.isNotBlank()) {
             transcriptJob = viewModelScope.launch {
-                repository.getTranscripts(targetHostUid, tripId).collect { lines ->
+                repository.getTranscripts(subscribeHostUid, subscribeTripId).collect { lines ->
                     _uiState.update { state ->
                         // Merge partial results from local state with final results from Firebase
                         val firebaseList = lines.map { "${it.authorName}: ${it.text}" }
@@ -114,7 +121,15 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         currentTripId = null
         transcriptJob?.cancel()
         transcriptJob = null
-        _uiState.update { it.copy(isTripActive = false, tripStartTime = null, currentTripId = null, hostUid = null) }
+        _uiState.update {
+            it.copy(
+                isTripActive = false,
+                tripStartTime = null,
+                currentTripId = null,
+                hostUid = null,
+                tripPath = null
+            )
+        }
 
         if (trip != null) {
             viewModelScope.launch {
@@ -147,23 +162,43 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         _uiState.update { it.copy(connectionStatus = status, connectedPeer = peer) }
     }
 
-    fun onTripStatusChanged(isActive: Boolean, tripId: String? = null, hostUid: String? = null) {
+    fun onTripStatusChanged(
+        isActive: Boolean,
+        tripId: String? = null,
+        hostUid: String? = null,
+        tripPath: String? = null
+    ) {
         val currentState = _uiState.value
+        val parsedTripPath = parseTripPath(tripPath)
         if (isActive) {
-            val resolvedTripId = tripId ?: currentState.currentTripId ?: UUID.randomUUID().toString()
+            val resolvedTripId = tripId ?: parsedTripPath.second ?: currentState.currentTripId ?: UUID.randomUUID().toString()
+            val resolvedHostUid = hostUid ?: parsedTripPath.first ?: currentState.hostUid
+            val resolvedPath = tripPath ?: buildTripPath(resolvedHostUid, resolvedTripId)
             if (
                 currentState.isTripActive &&
                     currentState.currentTripId == resolvedTripId &&
-                    currentState.hostUid == hostUid
+                    currentState.hostUid == resolvedHostUid &&
+                    currentState.tripPath == resolvedPath
             ) {
                 return
             }
-            startTrip(remoteTripId = resolvedTripId, hostId = hostUid)
-            Log.i(TAG, "Applied remote trip start. tripId=$resolvedTripId, hostUid=$hostUid")
+            startTrip(remoteTripId = resolvedTripId, hostId = resolvedHostUid, remoteTripPath = resolvedPath)
+            Log.i(
+                TAG,
+                "Applied remote trip start. tripId=$resolvedTripId, hostUid=$resolvedHostUid, tripPath=$resolvedPath"
+            )
             return
         }
 
         if (!currentState.isTripActive) {
+            return
+        }
+        val incomingTripId = tripId ?: parsedTripPath.second
+        val incomingHostUid = hostUid ?: parsedTripPath.first
+        if (!incomingTripId.isNullOrBlank() && incomingTripId != currentState.currentTripId) {
+            return
+        }
+        if (!incomingHostUid.isNullOrBlank() && incomingHostUid != currentState.hostUid) {
             return
         }
         endTrip()
@@ -172,7 +207,9 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
     fun updateTranscript(newTranscript: String, isFinal: Boolean) {
         val state = _uiState.value
-        val targetUid = state.hostUid ?: FirebaseAuth.getInstance().currentUser?.uid
+        val targetUid = state.hostUid
+            ?: parseTripPath(state.tripPath).first
+            ?: FirebaseAuth.getInstance().currentUser?.uid
         Log.d(
             TAG,
             "updateTranscript(isFinal=$isFinal, tripActive=${state.isTripActive}, " +
@@ -224,5 +261,30 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
     fun updateModelDownloadStatus(isDownloading: Boolean, progress: Int) {
         _uiState.update { it.copy(isModelDownloading = isDownloading, modelDownloadProgress = progress) }
+    }
+
+    private fun buildTripPath(hostUid: String?, tripId: String?): String? {
+        val normalizedHostUid = hostUid?.trim().orEmpty()
+        val normalizedTripId = tripId?.trim().orEmpty()
+        if (normalizedHostUid.isBlank() || normalizedTripId.isBlank()) {
+            return null
+        }
+        return "${FirestorePaths.ACCOUNTS}/$normalizedHostUid/${FirestorePaths.RIDES}/$normalizedTripId"
+    }
+
+    private fun parseTripPath(path: String?): Pair<String?, String?> {
+        if (path.isNullOrBlank()) {
+            return null to null
+        }
+        val segments = path.trim().split("/")
+        if (segments.size < 4) {
+            return null to null
+        }
+        if (segments[0] != FirestorePaths.ACCOUNTS || segments[2] != FirestorePaths.RIDES) {
+            return null to null
+        }
+        val hostUid = segments[1].takeIf { it.isNotBlank() }
+        val tripId = segments[3].takeIf { it.isNotBlank() }
+        return hostUid to tripId
     }
 }

@@ -93,7 +93,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 settingsState.whisperModelId,
                 tripState.isTripActive,
                 tripState.currentTripId,
-                tripState.hostUid
+                tripState.hostUid,
+                tripState.tripPath
             )
             boundService.setHostingEnabled(pairingViewModel.isHosting.value)
 
@@ -137,7 +138,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     settingsState.sttEngine,
                     settingsState.whisperModelId,
                     tripState.isTripActive,
-                    tripState.currentTripId
+                    tripState.currentTripId,
+                    tripState.hostUid,
+                    tripState.tripPath
                 ) {
                     audioService?.updateConfiguration(
                         settingsState.operatingMode, 
@@ -147,7 +150,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         settingsState.whisperModelId,
                         tripState.isTripActive,
                         tripState.currentTripId,
-                        tripState.hostUid
+                        tripState.hostUid,
+                        tripState.tripPath
                     )
                 }
 
@@ -182,7 +186,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                                 settings.whisperModelId,
                                 trip.isTripActive,
                                 trip.currentTripId,
-                                trip.hostUid
+                                trip.hostUid,
+                                trip.tripPath
                             )
                         }
                     },
@@ -253,9 +258,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
-    override fun onTripStatusChanged(isActive: Boolean, tripId: String?, hostUid: String?) {
+    override fun onTripStatusChanged(isActive: Boolean, tripId: String?, hostUid: String?, tripPath: String?) {
         runOnUiThread {
-            activeTripViewModel.onTripStatusChanged(isActive, tripId, hostUid)
+            activeTripViewModel.onTripStatusChanged(isActive, tripId, hostUid, tripPath)
         }
     }
 

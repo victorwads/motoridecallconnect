@@ -14,6 +14,7 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.audio.JavaAudioDeviceModule
+import org.webrtc.DataChannel
 
 class WebRtcClient(
     context: Context,
@@ -60,13 +61,25 @@ class WebRtcClient(
     }
 
     fun createOffer(sdpObserver: SdpObserver) {
-        val constraints = MediaConstraints()
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        }
         peerConnection?.createOffer(sdpObserver, constraints)
     }
 
     fun createAnswer(sdpObserver: SdpObserver) {
-        val constraints = MediaConstraints()
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        }
         peerConnection?.createAnswer(sdpObserver, constraints)
+    }
+
+    fun createDataChannel(label: String): DataChannel? {
+        val init = DataChannel.Init().apply {
+            ordered = true
+            negotiated = false
+        }
+        return peerConnection?.createDataChannel(label, init)
     }
 
     fun setLocalDescription(sdpObserver: SdpObserver, sdp: SessionDescription) {

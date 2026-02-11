@@ -130,6 +130,16 @@ fun ActiveTripScreen(
             }
         }
 
+        if (!uiState.tripPath.isNullOrBlank()) {
+            StatusCard(title = "Trip Sync Path", icon = Icons.Default.Call) {
+                Text(
+                    text = uiState.tripPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
         // --- Transcription List ---
         if (uiState.isTripActive || uiState.transcript.isNotEmpty()) {
             StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
