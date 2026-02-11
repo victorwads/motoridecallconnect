@@ -125,9 +125,15 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
     suspend fun insertTrip(trip: Trip): String {
         val user = auth.currentUser
         return if (user != null) {
+            val normalizedTrip = trip.copy(
+                participants = (trip.participants + user.uid)
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+            )
             val docRef = firestore.collection(FirestorePaths.ACCOUNTS).document(user.uid).collection(FirestorePaths.RIDES).document(trip.id)
             suspendCancellableCoroutine { continuation ->
-                docRef.set(trip)
+                docRef.set(normalizedTrip)
                     .addOnSuccessListener { continuation.resume(trip.id) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }

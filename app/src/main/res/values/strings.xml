@@ -40,6 +40,8 @@
     
     <!-- Pairing Screen -->
     <string name="pairing_title">Pairing</string>
+    <string name="client_mode_tab">Client</string>
+    <string name="host_mode_tab">Host</string>
     <string name="quick_pair_tab">Quick Pair</string>
     <string name="rooms_tab">Rooms</string>
     <string name="nearby_devices_title">Nearby devices</string>

@@ -35,6 +35,7 @@ class SpeechRecognizerHelper(
         private const val MIN_WHISPER_SAMPLES = 16_000 // 1 second at 16 kHz
         private const val MIN_SYSTEM_SAMPLES = 24_000 // 0.5 second at 48 kHz
         private const val SYSTEM_STT_TIMEOUT_SECONDS = 18L
+        private const val LEGACY_RESTART_DELAY_MS = 300L
 
         private const val EXTRA_AUDIO_SOURCE = "android.speech.extra.AUDIO_SOURCE"
         private const val EXTRA_AUDIO_SOURCE_CHANNEL_COUNT = "android.speech.extra.AUDIO_SOURCE_CHANNEL_COUNT"
@@ -58,6 +59,8 @@ class SpeechRecognizerHelper(
     private var whisperChunkCount = 0L
     private var systemChunkCount = 0L
     private var emptyWhisperResultCount = 0L
+    private var legacyNativeRecognizer: SpeechRecognizer? = null
+    private var isLegacyNativeSessionRunning = false
 
     interface SpeechRecognitionListener {
         fun onPartialResults(results: String)
@@ -92,6 +95,12 @@ class SpeechRecognizerHelper(
                 whisperLib.free()
                 isUsingWhisper = false
             }
+        }
+
+        if (previous == SttEngine.NATIVE && engine != SttEngine.NATIVE) {
+            stopLegacyNativeRecognizer()
+        } else if (engine == SttEngine.NATIVE && isListening && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            startLegacyNativeRecognizer()
         }
 
         Log.i(TAG, "STT engine changed from $previous to $selectedEngine")
@@ -240,11 +249,17 @@ class SpeechRecognizerHelper(
             )
         }
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            startLegacyNativeRecognizer()
+            return
+        }
+
         Log.i(TAG, "Using Android native SpeechRecognizer chunk mode. engine=$selectedEngine")
     }
 
     fun stopListening() {
         isListening = false
+        stopLegacyNativeRecognizer()
         synchronized(whisperLock) {
             if (isUsingWhisper) {
                 whisperLib.free()
@@ -272,7 +287,125 @@ class SpeechRecognizerHelper(
             return
         }
 
+        if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (!isLegacyNativeSessionRunning) {
+                startLegacyNativeRecognizer()
+            }
+            return
+        }
+
         processNativeChunk(data)
+    }
+
+    private fun startLegacyNativeRecognizer() {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            listener.onError("Speech recognition not available on this device.")
+            return
+        }
+        if (isLegacyNativeSessionRunning) {
+            return
+        }
+
+        mainHandler.post {
+            if (isDestroyed || !isListening || selectedEngine != SttEngine.NATIVE) {
+                return@post
+            }
+
+            try {
+                legacyNativeRecognizer?.cancel()
+            } catch (_: Throwable) {
+            }
+            try {
+                legacyNativeRecognizer?.destroy()
+            } catch (_: Throwable) {
+            }
+
+            try {
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                recognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+
+                    override fun onError(error: Int) {
+                        val errorMessage = mapSpeechRecognizerError(error)
+                        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                            listener.onError(errorMessage)
+                        }
+                        restartLegacyNativeRecognizer()
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val text = results
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            ?.trim()
+                        if (!text.isNullOrBlank()) {
+                            listener.onFinalResults(text)
+                        }
+                        restartLegacyNativeRecognizer()
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        partialResults
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { partial ->
+                                listener.onPartialResults(partial)
+                            }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+
+                recognizer.startListening(createLegacyNativeIntent())
+                legacyNativeRecognizer = recognizer
+                isLegacyNativeSessionRunning = true
+                Log.i(TAG, "Using legacy native SpeechRecognizer mode (API < 33).")
+            } catch (t: Throwable) {
+                isLegacyNativeSessionRunning = false
+                listener.onError("Native recognizer start failed: ${t.message}")
+            }
+        }
+    }
+
+    private fun restartLegacyNativeRecognizer() {
+        isLegacyNativeSessionRunning = false
+        if (!isListening || isDestroyed || selectedEngine != SttEngine.NATIVE) {
+            stopLegacyNativeRecognizer()
+            return
+        }
+        mainHandler.postDelayed(
+            { startLegacyNativeRecognizer() },
+            LEGACY_RESTART_DELAY_MS
+        )
+    }
+
+    private fun stopLegacyNativeRecognizer() {
+        isLegacyNativeSessionRunning = false
+        val recognizer = legacyNativeRecognizer ?: return
+        legacyNativeRecognizer = null
+        mainHandler.post {
+            try {
+                recognizer.cancel()
+            } catch (_: Throwable) {
+            }
+            try {
+                recognizer.destroy()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun createLegacyNativeIntent(): Intent {
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        }
     }
 
     private fun processWhisperChunk(data: ByteArray) {
@@ -446,7 +579,6 @@ class SpeechRecognizerHelper(
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                     putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
                     putExtra(EXTRA_AUDIO_SOURCE, readPipe)
                     putExtra(EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
@@ -571,6 +703,7 @@ class SpeechRecognizerHelper(
     fun destroy() {
         isListening = false
         isDestroyed = true
+        stopLegacyNativeRecognizer()
         synchronized(whisperLock) {
             whisperLib.free()
             isUsingWhisper = false

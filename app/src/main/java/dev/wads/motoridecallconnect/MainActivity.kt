@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.net.nsd.NsdServiceInfo
 import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
@@ -22,7 +21,6 @@ import androidx.room.Room
 import dev.wads.motoridecallconnect.data.local.AppDatabase
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.service.AudioService
-import dev.wads.motoridecallconnect.transport.NsdHelper
 import dev.wads.motoridecallconnect.ui.common.ViewModelFactory
 import dev.wads.motoridecallconnect.ui.navigation.AppNavigation
 import dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme
@@ -73,7 +71,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 settingsState.sttEngine,
                 settingsState.whisperModelId,
                 tripState.isTripActive,
-                tripState.currentTripId
+                tripState.currentTripId,
+                tripState.hostUid
             )
             boundService.setHostingEnabled(pairingViewModel.isHosting.value)
 
@@ -130,7 +129,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         settingsState.sttEngine,
                         settingsState.whisperModelId,
                         tripState.isTripActive,
-                        tripState.currentTripId
+                        tripState.currentTripId,
+                        tripState.hostUid
                     )
                 }
 
@@ -164,7 +164,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                                 settings.sttEngine,
                                 settings.whisperModelId,
                                 trip.isTripActive,
-                                trip.currentTripId
+                                trip.currentTripId,
+                                trip.hostUid
                             )
                         }
                     },
@@ -231,13 +232,13 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: dev.wads.motoridecallconnect.data.model.Device?) {
         runOnUiThread {
             activeTripViewModel.onConnectionStatusChanged(status, peer)
-            pairingViewModel.updateConnectionStatus(status)
+            pairingViewModel.updateConnectionStatus(status, peer)
         }
     }
 
-    override fun onTripStatusChanged(isActive: Boolean, tripId: String?) {
+    override fun onTripStatusChanged(isActive: Boolean, tripId: String?, hostUid: String?) {
         runOnUiThread {
-            activeTripViewModel.onTripStatusChanged(isActive, tripId)
+            activeTripViewModel.onTripStatusChanged(isActive, tripId, hostUid)
         }
     }
 
@@ -255,12 +256,16 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onResume() {
         super.onResume()
-        deviceDiscoveryRepository.startDiscovery()
+        if (pairingViewModel.isHosting.value) {
+            pairingViewModel.stopDiscovery()
+        } else {
+            pairingViewModel.startDiscovery()
+        }
     }
 
     override fun onPause() {
         super.onPause()
-        deviceDiscoveryRepository.stopDiscovery()
+        pairingViewModel.stopDiscovery()
     }
 
     override fun onDestroy() {

@@ -29,9 +29,14 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -42,7 +47,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -60,6 +64,7 @@ import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     operatingMode: OperatingMode,
@@ -78,9 +83,12 @@ fun SettingsScreen(
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
 ) {
-    val context = LocalContext.current
     val user = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
     val isLoggedIn = user != null
+    var whisperModelExpanded by remember { mutableStateOf(false) }
+    val selectedWhisperModel = remember(whisperModelId) {
+        WhisperModelCatalog.findById(whisperModelId) ?: WhisperModelCatalog.defaultOption
+    }
     
     // Mock State - In a real app, this would come from a ViewModel/DataStore
     var preferBluetooth by remember { mutableStateOf(true) }
@@ -207,36 +215,60 @@ fun SettingsScreen(
                     modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
                 )
 
-                WhisperModelCatalog.options.forEach { model ->
-                    val selected = whisperModelId == model.id
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .selectable(
-                                selected = selected,
-                                onClick = { onWhisperModelChange(model.id) }
-                            )
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                ExposedDropdownMenuBox(
+                    expanded = whisperModelExpanded,
+                    onExpandedChange = { whisperModelExpanded = !whisperModelExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedWhisperModel.displayName,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth(),
+                        label = { Text(stringResource(R.string.whisper_model_header)) },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = whisperModelExpanded)
+                        }
+                    )
+                    DropdownMenu(
+                        expanded = whisperModelExpanded,
+                        onDismissRequest = { whisperModelExpanded = false }
                     ) {
-                        RadioButton(
-                            selected = selected,
-                            onClick = { onWhisperModelChange(model.id) }
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = model.displayName,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                            Text(
-                                text = model.details,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        WhisperModelCatalog.options.forEach { model ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = model.displayName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (model.id == selectedWhisperModel.id) {
+                                                FontWeight.SemiBold
+                                            } else {
+                                                FontWeight.Normal
+                                            }
+                                        )
+                                        Text(
+                                            text = model.details,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    onWhisperModelChange(model.id)
+                                    whisperModelExpanded = false
+                                }
                             )
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = selectedWhisperModel.details,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             
             Spacer(modifier = Modifier.height(16.dp))

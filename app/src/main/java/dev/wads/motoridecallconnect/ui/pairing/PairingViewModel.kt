@@ -25,8 +25,13 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
+    private val _connectedPeer = MutableStateFlow<Device?>(null)
+    val connectedPeer: StateFlow<Device?> = _connectedPeer.asStateFlow()
 
     fun startDiscovery() {
+        if (_isHosting.value) {
+            return
+        }
         repository.startDiscovery()
     }
 
@@ -35,7 +40,11 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
     }
 
     fun startHosting(deviceName: String, port: Int = 8080) {
+        if (_isHosting.value) {
+            return
+        }
         _isHosting.value = true
+        repository.stopDiscovery()
         val userId = FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
         val registrationName = "$userId|$deviceName"
         repository.registerService(port, registrationName)
@@ -46,21 +55,30 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
     }
 
     fun stopHosting() {
+        if (!_isHosting.value && _qrCodeText.value == null) {
+            return
+        }
         _isHosting.value = false
         _qrCodeText.value = null
         repository.unregisterService()
     }
 
-    fun updateConnectionStatus(status: ConnectionStatus) {
+    fun activateHostMode(deviceName: String, port: Int = 8080) {
+        startHosting(deviceName, port)
+    }
+
+    fun activateClientMode() {
+        stopHosting()
+        startDiscovery()
+    }
+
+    fun updateConnectionStatus(status: ConnectionStatus, peer: Device?) {
         _connectionStatus.value = status
         _isConnected.value = status == ConnectionStatus.CONNECTED
+        _connectedPeer.value = peer
     }
 
-    fun connectToDevice(device: Device) {
-        // Handled via onConnectToDevice callback and AudioService status updates
-    }
-
-    fun handleScannedCode(code: String) {
+    fun handleScannedCode(code: String): Device? {
         // Expected format: motoride://ip:port/userId|deviceName
         if (code.startsWith("motoride://")) {
             val parts = code.removePrefix("motoride://").split("/")
@@ -75,14 +93,22 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
                     val userId = nameParts.getOrNull(0) ?: rawName
                     val displayName = nameParts.getOrNull(1) ?: rawName
                     
-                    connectToDevice(Device(id = userId, name = displayName, deviceName = displayName, ip = ip, port = port))
+                    return Device(
+                        id = userId,
+                        name = displayName,
+                        deviceName = displayName,
+                        ip = ip,
+                        port = port
+                    )
                 }
             }
         }
+        return null
     }
 
     override fun onCleared() {
         super.onCleared()
-        repository.stopDiscovery()
+        stopHosting()
+        stopDiscovery()
     }
 }

@@ -1,6 +1,5 @@
 package dev.wads.motoridecallconnect.ui.pairing
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,12 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
@@ -33,9 +28,10 @@ import androidx.compose.ui.unit.dp
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
+import dev.wads.motoridecallconnect.ui.components.BadgeStatus
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
-import dev.wads.motoridecallconnect.ui.components.EmptyState
+import dev.wads.motoridecallconnect.ui.components.StatusBadge
 import dev.wads.motoridecallconnect.ui.components.StatusCard
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import dev.wads.motoridecallconnect.utils.QrCodeUtils
@@ -45,19 +41,36 @@ import kotlinx.coroutines.delay
 fun PairingScreen(
     viewModel: PairingViewModel,
     onNavigateBack: () -> Unit,
-    onConnectToDevice: (Device) -> Unit
+    onConnectToDevice: (Device) -> Unit,
+    onDisconnectClick: () -> Unit
 ) {
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val isHosting by viewModel.isHosting.collectAsState()
     val qrCodeText by viewModel.qrCodeText.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val connectedPeer by viewModel.connectedPeer.collectAsState()
 
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: Quick, 1: Rooms
+    var selectedModeTab by remember { mutableIntStateOf(if (isHosting) 1 else 0) } // 0: Client, 1: Host
     var viewState by remember { mutableStateOf<PairViewState>(PairViewState.List) }
     var selectedDevice by remember { mutableStateOf<Device?>(null) }
     var pairState by remember { mutableStateOf<PairConnectionState>(PairConnectionState.Idle) }
 
-    val tabs = listOf(stringResource(R.string.quick_pair_tab), stringResource(R.string.rooms_tab))
+    val modeTabs = listOf(
+        stringResource(R.string.client_mode_tab),
+        stringResource(R.string.host_mode_tab)
+    )
+
+    LaunchedEffect(isHosting) {
+        selectedModeTab = if (isHosting) 1 else 0
+    }
+
+    if (connectionStatus == ConnectionStatus.CONNECTED) {
+        PairConnectedView(
+            connectedPeer = connectedPeer,
+            onDisconnectClick = onDisconnectClick
+        )
+        return
+    }
 
     // Handle view transitions logic
     when (val currentView = viewState) {
@@ -76,69 +89,29 @@ fun PairingScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Host Mode Toggle
-                StatusCard(title = stringResource(R.string.host_mode_label)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                if (isHosting) stringResource(R.string.status_connected) else stringResource(R.string.status_disconnected),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = if (isHosting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                stringResource(R.string.be_host_description),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = isHosting,
-                            onCheckedChange = { 
-                                if (it) {
-                                    val modelName = android.os.Build.MODEL
-                                    viewModel.startHosting(modelName)
-                                } else viewModel.stopHosting()
-                            }
-                        )
-                    }
-                    
-                    if (isHosting && qrCodeText != null) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        qrCodeText?.let { text ->
-                            val bitmap = remember(text) { QrCodeUtils.generateQrCode(text) }
-                            Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "QR Code",
-                                    modifier = Modifier.size(200.dp).border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)).padding(8.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Tabs
+                // Exclusive role tabs: Client OR Host
                 TabRow(
-                    selectedTabIndex = selectedTab,
+                    selectedTabIndex = selectedModeTab,
                     containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = MaterialTheme.colorScheme.primary,
                     indicator = { tabPositions ->
                         TabRowDefaults.SecondaryIndicator(
-                            Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                            Modifier.tabIndicatorOffset(tabPositions[selectedModeTab]),
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                 ) {
-                    tabs.forEachIndexed { index, title ->
+                    modeTabs.forEachIndexed { index, title ->
                         Tab(
-                            selected = selectedTab == index,
-                            onClick = { selectedTab = index },
+                            selected = selectedModeTab == index,
+                            onClick = {
+                                selectedModeTab = index
+                                if (index == 1) {
+                                    viewModel.activateHostMode(android.os.Build.MODEL)
+                                } else {
+                                    viewModel.activateClientMode()
+                                }
+                            },
                             text = { Text(title) }
                         )
                     }
@@ -146,8 +119,8 @@ fun PairingScreen(
                 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                if (selectedTab == 0) {
-                    // Quick Pair List
+                if (selectedModeTab == 0) {
+                    // Client mode: discover and connect
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -193,12 +166,41 @@ fun PairingScreen(
                         Text(stringResource(R.string.use_pairing_code))
                     }
                 } else {
-                    // Rooms (Mock for now)
-                    EmptyState(
-                        icon = Icons.Default.Group,
-                        title = stringResource(R.string.no_rooms_found),
-                        description = stringResource(R.string.create_room_hint)
-                    )
+                    // Host mode: only publish and show QR.
+                    StatusCard(title = stringResource(R.string.host_mode_label)) {
+                        Text(
+                            text = stringResource(R.string.be_host_description),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = stringResource(R.string.status_connected),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (qrCodeText != null) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            qrCodeText?.let { text ->
+                                val bitmap = remember(text) { QrCodeUtils.generateQrCode(text) }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        bitmap = bitmap.asImageBitmap(),
+                                        contentDescription = "QR Code",
+                                        modifier = Modifier
+                                            .size(200.dp)
+                                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -219,8 +221,9 @@ fun PairingScreen(
                     if (pairState == PairConnectionState.Connecting) {
                         when (connectionStatus) {
                             ConnectionStatus.CONNECTED -> pairState = PairConnectionState.Connected
-                            ConnectionStatus.ERROR, ConnectionStatus.DISCONNECTED -> pairState = PairConnectionState.Error
-                            ConnectionStatus.CONNECTING -> Unit
+                            ConnectionStatus.CONNECTING,
+                            ConnectionStatus.ERROR,
+                            ConnectionStatus.DISCONNECTED -> Unit
                         }
                     }
                 }
@@ -240,8 +243,15 @@ fun PairingScreen(
             CodePairView(
                 onBack = { viewState = PairViewState.List },
                 onSubmit = { code ->
-                    viewModel.handleScannedCode(code)
-                    viewState = PairViewState.List
+                    val parsedDevice = viewModel.handleScannedCode(code)
+                    if (parsedDevice != null) {
+                        selectedDevice = parsedDevice
+                        pairState = PairConnectionState.Connecting
+                        onConnectToDevice(parsedDevice)
+                        viewState = PairViewState.Detail
+                    } else {
+                        viewState = PairViewState.List
+                    }
                 }
             )
         }
@@ -249,8 +259,15 @@ fun PairingScreen(
         is PairViewState.Scanner -> {
             Box(modifier = Modifier.fillMaxSize()) {
                 QrCodeScanner { code ->
-                    viewModel.handleScannedCode(code)
-                    viewState = PairViewState.List
+                    val parsedDevice = viewModel.handleScannedCode(code)
+                    if (parsedDevice != null) {
+                        selectedDevice = parsedDevice
+                        pairState = PairConnectionState.Connecting
+                        onConnectToDevice(parsedDevice)
+                        viewState = PairViewState.Detail
+                    } else {
+                        viewState = PairViewState.List
+                    }
                 }
                 IconButton(
                     onClick = { viewState = PairViewState.List },
@@ -318,8 +335,6 @@ fun DeviceDetailView(
                 when (state) {
                     PairConnectionState.Idle -> {
                         BigButton(text = stringResource(R.string.connect), onClick = onConnect, fullWidth = true)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        BigButton(text = stringResource(R.string.connect_and_start_trip), variant = ButtonVariant.Success, onClick = onConnect, fullWidth = true)
                     }
                     PairConnectionState.Connecting -> {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -393,6 +408,55 @@ fun CodePairView(
                     onClick = { onSubmit(code) },
                     fullWidth = true
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairConnectedView(
+    connectedPeer: Device?,
+    onDisconnectClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .padding(top = 16.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.pairing_title),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        StatusCard(title = stringResource(R.string.connection_header)) {
+            connectedPeer?.let { peer ->
+                UserProfileView(
+                    userId = peer.id,
+                    fallbackName = peer.name,
+                    avatarSize = 40,
+                    showId = false
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                StatusBadge(
+                    status = BadgeStatus.Connected,
+                    label = stringResource(R.string.status_connected)
+                )
+                TextButton(onClick = onDisconnectClick) {
+                    Text(
+                        text = stringResource(R.string.disconnect),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
             }
         }
     }

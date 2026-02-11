@@ -24,6 +24,8 @@
     
     <!-- Pairing Screen -->
     <string name="pairing_title">Pareamento</string>
+    <string name="client_mode_tab">Cliente</string>
+    <string name="host_mode_tab">Host</string>
     <string name="quick_pair_tab">Pareamento rápido</string>
     <string name="rooms_tab">Salas</string>
     <string name="nearby_devices_title">Dispositivos próximos</string>

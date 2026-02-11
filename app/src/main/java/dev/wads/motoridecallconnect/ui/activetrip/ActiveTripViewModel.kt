@@ -58,12 +58,23 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         val tripId = remoteTripId ?: UUID.randomUUID().toString()
         val myUid = FirebaseAuth.getInstance().currentUser?.uid
         val targetHostUid = hostId ?: myUid
+        val selectedPeer = _uiState.value.connectedPeer
+        val connectedPeerUid = selectedPeer?.id?.takeIf { it.isNotBlank() }
+        val participants = listOfNotNull(
+            connectedPeerUid?.takeUnless { it == myUid },
+            targetHostUid?.takeIf { it.isNotBlank() },
+            myUid?.takeIf { it.isNotBlank() }
+        ).distinct()
+        val peerDeviceLabel = selectedPeer?.name?.takeIf { it.isNotBlank() }
+            ?: selectedPeer?.deviceName?.takeIf { it.isNotBlank() }
 
         currentTripId = tripId
         val now = System.currentTimeMillis()
         val trip = dev.wads.motoridecallconnect.data.model.Trip(
             id = tripId,
-            startTime = now
+            startTime = now,
+            peerDevice = peerDeviceLabel,
+            participants = participants
         )
         activeTrip = trip
         _uiState.update { it.copy(
@@ -136,8 +147,27 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         _uiState.update { it.copy(connectionStatus = status, connectedPeer = peer) }
     }
 
-    fun onTripStatusChanged(isActive: Boolean, tripId: String? = null) {
-        Log.i(TAG, "Ignoring remote trip status update. active=$isActive, tripId=$tripId")
+    fun onTripStatusChanged(isActive: Boolean, tripId: String? = null, hostUid: String? = null) {
+        val currentState = _uiState.value
+        if (isActive) {
+            val resolvedTripId = tripId ?: currentState.currentTripId ?: UUID.randomUUID().toString()
+            if (
+                currentState.isTripActive &&
+                    currentState.currentTripId == resolvedTripId &&
+                    currentState.hostUid == hostUid
+            ) {
+                return
+            }
+            startTrip(remoteTripId = resolvedTripId, hostId = hostUid)
+            Log.i(TAG, "Applied remote trip start. tripId=$resolvedTripId, hostUid=$hostUid")
+            return
+        }
+
+        if (!currentState.isTripActive) {
+            return
+        }
+        endTrip()
+        Log.i(TAG, "Applied remote trip stop.")
     }
 
     fun updateTranscript(newTranscript: String, isFinal: Boolean) {

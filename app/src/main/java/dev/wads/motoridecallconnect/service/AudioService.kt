@@ -16,6 +16,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
@@ -68,6 +69,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var stopCommand = "parar"
     private var isTransmitting = false
     private var isTripActive = false
+    private var currentTripId: String? = null
+    private var currentTripHostUid: String? = null
     private var connectedPeer: Device? = null
     private var connectionStatus = ConnectionStatus.DISCONNECTED
     private val audioBuffer = mutableListOf<Byte>()
@@ -86,7 +89,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
         fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
-        fun onTripStatusChanged(isActive: Boolean, tripId: String? = null)
+        fun onTripStatusChanged(isActive: Boolean, tripId: String? = null, hostUid: String? = null)
         fun onModelDownloadProgress(progress: Int)
         fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
     }
@@ -109,6 +112,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     ConnectionStatus.DISCONNECTED
                 else -> ConnectionStatus.DISCONNECTED
             }
+            syncOutgoingAudioState(reason = "ice_state_change")
             callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         }
         override fun onIceConnectionReceivingChange(p0: Boolean) {}
@@ -162,6 +166,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         speechRecognizerHelper?.destroy()
         speechRecognizerHelper = null
         audioCapturer.shutdown()
+        webRtcClient.close()
         signalingClient.close()
     }
 
@@ -169,6 +174,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         this.callback = callback
         // Update immediately with current state
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
+        callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid)
     }
 
     fun connectToPeer(device: Device) {
@@ -203,6 +209,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         connectedPeer = null
         connectionStatus = ConnectionStatus.DISCONNECTED
+        setTransmitting(false, reason = "disconnect")
+        syncOutgoingAudioState(reason = "disconnect_recreate_webrtc")
         callback?.onConnectionStatusChanged(connectionStatus, null)
     }
 
@@ -229,20 +237,38 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         sttEngine: SttEngine,
         modelId: String,
         tripActive: Boolean,
-        tripId: String? = null
+        tripId: String? = null,
+        tripHostUid: String? = null,
+        propagateTripStatus: Boolean = true
     ) {
         val resolvedModelId = WhisperModelCatalog.findById(modelId)?.id
             ?: WhisperModelCatalog.defaultOption.id
-        val tripChanged = isTripActive != tripActive
+        val normalizedTripId = when {
+            !tripActive -> null
+            !tripId.isNullOrBlank() -> tripId
+            else -> currentTripId
+        }
+        val normalizedTripHostUid = when {
+            !tripActive -> null
+            !tripHostUid.isNullOrBlank() -> tripHostUid
+            else -> currentTripHostUid
+        }
+        val tripChanged =
+            isTripActive != tripActive ||
+                currentTripId != normalizedTripId ||
+                currentTripHostUid != normalizedTripHostUid
         val wasTripActive = isTripActive
         val engineChanged = this.sttEngine != sttEngine
         val modelChanged = whisperModelId != resolvedModelId
+        val modeChanged = currentMode != mode
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
         this.sttEngine = sttEngine
         whisperModelId = resolvedModelId
         isTripActive = tripActive
+        currentTripId = normalizedTripId
+        currentTripHostUid = normalizedTripHostUid
 
         if (resolvedModelId != modelId) {
             Log.w(TAG, "Unknown whisper model '$modelId'. Falling back to '$resolvedModelId'.")
@@ -260,6 +286,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
 
         if (tripChanged && wasTripActive && !tripActive) {
+            setTransmitting(false, reason = "trip_end")
             stopAudioCaptureIfNeeded(reason = "trip_end")
             flushTranscriptionBuffer(force = true, reason = "trip_end")
             speechRecognizerHelper?.stopListening()
@@ -300,6 +327,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         if (tripChanged) {
             Log.i(TAG, "Trip status changed locally. isTripActive=$isTripActive, tripId=$tripId")
+            if (propagateTripStatus) {
+                sendTripStatusToPeer()
+            }
         }
         if (modelChanged) {
             Log.i(TAG, "Whisper model changed locally. modelId=$whisperModelId")
@@ -312,16 +342,17 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, " +
                 "SttEngine=$sttEngine, WhisperModel=$whisperModelId, TripActive=$tripActive"
         )
-        
-        if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
-            isTransmitting = true
-            requestAudioDucking()
-        } else if (currentMode != OperatingMode.CONTINUOUS_TRANSMISSION && isTransmitting) {
-            if (currentMode != OperatingMode.VOICE_COMMAND) {
-                isTransmitting = false
-                releaseAudioDucking()
-            }
+
+        if (!isTripActive) {
+            setTransmitting(false, reason = "trip_inactive")
+        } else if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION) {
+            setTransmitting(true, reason = "continuous_mode")
+        } else if (tripChanged && tripActive) {
+            setTransmitting(true, reason = "trip_start")
+        } else if (modeChanged) {
+            setTransmitting(false, reason = "mode_reset")
         }
+        syncOutgoingAudioState(reason = "configuration_update")
     }
 
     // --- SignalingListener Callbacks ---
@@ -329,7 +360,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.d("AudioService", "Peer connected. initiator=$isInitiator")
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
-        signalingClient.sendMessage("NAME:${Build.MODEL}")
+        signalingClient.sendMessage("NAME:${buildPeerInfoPayload()}")
+        sendTripStatusToPeer()
         if (isInitiator) {
             webRtcClient.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription) {
@@ -349,14 +381,25 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 }
             })
         }
+        syncOutgoingAudioState(reason = "peer_connected")
     }
 
     override fun onPeerInfoReceived(name: String) {
         Log.d("AudioService", "Peer info received: $name")
+        val (peerUid, peerDisplayName) = parsePeerInfoPayload(name)
         if (connectedPeer == null) {
-            connectedPeer = Device(id = name, name = name, deviceName = name)
+            connectedPeer = Device(
+                id = peerUid ?: peerDisplayName,
+                name = peerDisplayName,
+                deviceName = peerDisplayName
+            )
         } else {
-            connectedPeer = connectedPeer?.copy(name = name, deviceName = name)
+            val existing = connectedPeer
+            connectedPeer = existing?.copy(
+                id = peerUid ?: existing.id,
+                name = peerDisplayName,
+                deviceName = peerDisplayName
+            )
         }
         callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTING, connectedPeer)
     }
@@ -414,19 +457,49 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val parts = candidate.split(":", limit = 3)
         if (parts.size >= 3) {
             val mid = parts[0]
-            val index = parts[1].toInt()
+            val index = parts[1].toIntOrNull() ?: return
             val sdp = normalizeSignaledSdp(parts[2])
             webRtcClient.addIceCandidate(IceCandidate(mid, index, sdp))
         }
     }
 
-    override fun onTripStatusReceived(active: Boolean, tripId: String?) {
-        Log.i(TAG, "Ignoring remote trip status (decoupled from connection). active=$active, id=$tripId")
+    override fun onTripStatusReceived(active: Boolean, tripId: String?, hostUid: String?) {
+        Log.i(TAG, "Remote trip status received. active=$active, id=$tripId, hostUid=$hostUid")
+        val normalizedTripId = when {
+            !active -> null
+            !tripId.isNullOrBlank() -> tripId
+            else -> currentTripId
+        }
+        val normalizedHostUid = when {
+            !active -> null
+            !hostUid.isNullOrBlank() -> hostUid
+            else -> currentTripHostUid
+        }
+        val hasChanged =
+            isTripActive != active ||
+                currentTripId != normalizedTripId ||
+                currentTripHostUid != normalizedHostUid
+        if (!hasChanged) {
+            return
+        }
+        updateConfiguration(
+            mode = currentMode,
+            startCmd = startCommand,
+            stopCmd = stopCommand,
+            sttEngine = sttEngine,
+            modelId = whisperModelId,
+            tripActive = active,
+            tripId = normalizedTripId,
+            tripHostUid = normalizedHostUid,
+            propagateTripStatus = false
+        )
+        callback?.onTripStatusChanged(active, normalizedTripId, normalizedHostUid)
     }
 
     override fun onPeerDisconnected() {
         Log.w(TAG, "Signaling peer disconnected")
         connectionStatus = ConnectionStatus.DISCONNECTED
+        syncOutgoingAudioState(reason = "peer_disconnected")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         restartSignalingServer()
     }
@@ -434,6 +507,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     override fun onSignalingError(error: Throwable) {
         Log.e(TAG, "Signaling error", error)
         connectionStatus = ConnectionStatus.ERROR
+        syncOutgoingAudioState(reason = "signaling_error")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         restartSignalingServer()
     }
@@ -463,24 +537,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         
         // 1. Handle Intercom Transmission (VAD Logic)
-        if (currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
-            if (isSpeechDetected) {
-                if (!isTransmitting) {
-                    isTransmitting = true
-                    requestAudioDucking()
-                    Log.i("AudioService", "Speech detected. Transmission ON.")
-                }
-            } else {
-                if (isTransmitting) {
-                    isTransmitting = false
-                    releaseAudioDucking()
-                    Log.i("AudioService", "Silence detected. Transmission OFF.")
-                }
+        if (isTripActive && currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
+            if (isSpeechDetected && !isTransmitting) {
+                setTransmitting(true, reason = "vad_speech_detected")
+            } else if (!isSpeechDetected && isTransmitting) {
+                setTransmitting(false, reason = "vad_silence_detected")
             }
         }
 
-        // 2. Handle Transcription Recording (chunked mode only for Whisper).
-        if (isTripActive && sttEngine == SttEngine.WHISPER) {
+        // 2. Handle Transcription Recording for the selected STT engine.
+        if (isTripActive) {
             var flushReason: String? = null
             synchronized(transcriptionStateLock) {
                 audioBuffer.addAll(currentData.toList())
@@ -550,15 +616,45 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun handleVoiceCommand(command: String) {
-        if (command.contains(startCommand, ignoreCase = true) && !isTransmitting) {
-            isTransmitting = true
-            requestAudioDucking()
-            Log.i("AudioService", "Start command detected. Transmission ON.")
-        } else if (command.contains(stopCommand, ignoreCase = true) && isTransmitting) {
-            isTransmitting = false
-            releaseAudioDucking()
-            Log.i("AudioService", "Stop command detected. Transmission OFF.")
+        if (!isTripActive) {
+            return
         }
+        if (command.contains(startCommand, ignoreCase = true) && !isTransmitting) {
+            setTransmitting(true, reason = "voice_command_start")
+        } else if (command.contains(stopCommand, ignoreCase = true) && isTransmitting) {
+            setTransmitting(false, reason = "voice_command_stop")
+        }
+    }
+
+    private fun setTransmitting(transmitting: Boolean, reason: String) {
+        if (isTransmitting == transmitting) {
+            syncOutgoingAudioState(reason = reason)
+            return
+        }
+        isTransmitting = transmitting
+        if (transmitting) {
+            requestAudioDucking()
+            Log.i(TAG, "Transmission ON. reason=$reason")
+        } else {
+            releaseAudioDucking()
+            Log.i(TAG, "Transmission OFF. reason=$reason")
+        }
+        syncOutgoingAudioState(reason = reason)
+    }
+
+    private fun shouldEnableOutgoingAudio(): Boolean {
+        val signalingConnected = connectionStatus == ConnectionStatus.CONNECTED
+        return isTripActive && isTransmitting && signalingConnected
+    }
+
+    private fun syncOutgoingAudioState(reason: String) {
+        val enabled = shouldEnableOutgoingAudio()
+        webRtcClient.setLocalAudioEnabled(enabled)
+        Log.d(
+            TAG,
+            "Sync outgoing audio. enabled=$enabled, reason=$reason, tripActive=$isTripActive, " +
+                "transmitting=$isTransmitting, connectionStatus=$connectionStatus"
+        )
     }
 
     @Suppress("DEPRECATION")
@@ -692,6 +788,19 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         resetSignalingClient(startServer = isHostingEnabled)
     }
 
+    private fun sendTripStatusToPeer() {
+        if (connectionStatus == ConnectionStatus.DISCONNECTED || connectionStatus == ConnectionStatus.ERROR) {
+            return
+        }
+        if (isTripActive) {
+            signalingClient.sendMessage(
+                "TRIP:START:${currentTripId.orEmpty()}:${currentTripHostUid.orEmpty()}"
+            )
+        } else {
+            signalingClient.sendMessage("TRIP:STOP")
+        }
+    }
+
     private fun resetSignalingClient(startServer: Boolean) {
         signalingClient.close()
         signalingClient = SignalingClient(this)
@@ -706,6 +815,28 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private fun encodeSignalPayload(raw: String): String {
         return Base64.encodeToString(raw.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+
+    private fun buildPeerInfoPayload(): String {
+        val firebaseUser = FirebaseAuth.getInstance().currentUser
+        val uid = firebaseUser?.uid?.takeIf { it.isNotBlank() }
+        val displayName = firebaseUser?.displayName?.takeIf { it.isNotBlank() } ?: Build.MODEL
+        return if (uid != null) {
+            "$uid|$displayName"
+        } else {
+            displayName
+        }
+    }
+
+    private fun parsePeerInfoPayload(raw: String): Pair<String?, String> {
+        val parts = raw.split("|", limit = 2)
+        return if (parts.size == 2 && parts[0].isNotBlank()) {
+            val uid = parts[0]
+            val displayName = parts[1].ifBlank { uid }
+            uid to displayName
+        } else {
+            null to raw
+        }
     }
 
     private fun getOrCreateSpeechRecognizerHelper(): SpeechRecognizerHelper {

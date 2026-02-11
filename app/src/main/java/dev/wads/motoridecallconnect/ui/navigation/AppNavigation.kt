@@ -69,8 +69,6 @@ fun AppNavigation(
     val isLocalMode by userPreferences.localMode.collectAsState(initial = null)
     var isUserLoggedIn by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser != null) }
 
-    val isHosting by pairingViewModel.isHosting.collectAsState()
-
     if (!isUserLoggedIn && isLocalMode == false) {
         LoginScreen(
             viewModel = loginViewModel,
@@ -151,10 +149,8 @@ fun AppNavigation(
                 val uiState by activeTripViewModel.uiState.collectAsState()
                 ActiveTripScreen(
                     uiState = uiState,
-                    isHost = isHosting,
                     onStartTripClick = onStartTripClick,
-                    onEndTripClick = onEndTripClick,
-                    onDisconnectClick = onDisconnectClick
+                    onEndTripClick = onEndTripClick
                 )
             }
             composable(Screen.TripHistory.route) {
@@ -212,7 +208,8 @@ fun AppNavigation(
                     onNavigateBack = { navController.popBackStack() },
                     onConnectToDevice = { device ->
                         onConnectToDevice(device)
-                    }
+                    },
+                    onDisconnectClick = onDisconnectClick
                 )
             }
             composable(Screen.Friends.route) {

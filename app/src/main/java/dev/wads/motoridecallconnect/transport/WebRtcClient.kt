@@ -19,6 +19,9 @@ class WebRtcClient(
     context: Context,
     private val observer: PeerConnection.Observer
 ) {
+    companion object {
+        private const val TAG = "WebRtcClient"
+    }
 
     private val peerConnectionFactory: PeerConnectionFactory
 
@@ -51,8 +54,9 @@ class WebRtcClient(
 
     private val audioConstraints = MediaConstraints()
     private val audioSource: AudioSource? = peerConnectionFactory.createAudioSource(audioConstraints)
-    val localAudioTrack: AudioTrack? = peerConnectionFactory.createAudioTrack("local_audio_track", audioSource).apply {
-        peerConnection?.addTrack(this)
+    private val localAudioTrack: AudioTrack? = peerConnectionFactory.createAudioTrack("local_audio_track", audioSource).apply {
+        this?.setEnabled(false)
+        this?.let { peerConnection?.addTrack(it) }
     }
 
     fun createOffer(sdpObserver: SdpObserver) {
@@ -75,6 +79,11 @@ class WebRtcClient(
 
     fun addIceCandidate(candidate: IceCandidate) {
         peerConnection?.addIceCandidate(candidate)
+    }
+
+    fun setLocalAudioEnabled(enabled: Boolean) {
+        localAudioTrack?.setEnabled(enabled)
+        Log.d(TAG, "Local audio track enabled=$enabled")
     }
 
     fun close() {

@@ -8,22 +8,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,37 +27,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.wads.motoridecallconnect.R
-import dev.wads.motoridecallconnect.ui.components.BadgeStatus
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.ChronometerView
-import dev.wads.motoridecallconnect.ui.components.StatusBadge
 import dev.wads.motoridecallconnect.ui.components.StatusCard
-import dev.wads.motoridecallconnect.ui.components.UserProfileView
 
 @Composable
 fun ActiveTripScreen(
     uiState: ActiveTripUiState,
-    isHost: Boolean,
     onStartTripClick: () -> Unit,
-    onEndTripClick: () -> Unit,
-    onDisconnectClick: () -> Unit = {}
+    onEndTripClick: () -> Unit
 ) {
-    val badgeStatus = when (uiState.connectionStatus) {
-        ConnectionStatus.CONNECTED -> BadgeStatus.Connected
-        ConnectionStatus.CONNECTING -> BadgeStatus.Connecting
-        ConnectionStatus.ERROR -> BadgeStatus.Error
-        else -> BadgeStatus.Disconnected
-    }
-    
-    val connectionStatusLabel = when (uiState.connectionStatus) {
-        ConnectionStatus.CONNECTED -> stringResource(R.string.status_connected)
-        ConnectionStatus.CONNECTING -> stringResource(R.string.status_connecting)
-        ConnectionStatus.ERROR -> stringResource(R.string.status_error)
-        else -> stringResource(R.string.status_disconnected)
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -120,40 +95,6 @@ fun ActiveTripScreen(
                         modifier = Modifier.align(Alignment.End)
                     )
                 }
-            }
-        }
-
-        // --- Connection Status (Smaller) ---
-        StatusCard(title = stringResource(R.string.connection_header), icon = Icons.Default.Share) { // Placeholder for Link2
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    StatusBadge(status = badgeStatus, label = connectionStatusLabel)
-                    
-                    if (uiState.connectedPeer != null && (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONNECTING)) {
-                        Spacer(modifier = Modifier.width(12.dp))
-                        UserProfileView(
-                            userId = uiState.connectedPeer.id,
-                            fallbackName = uiState.connectedPeer.name,
-                            avatarSize = 32,
-                            showId = false
-                        )
-                    }
-                }
-
-                if (badgeStatus == BadgeStatus.Connected || badgeStatus == BadgeStatus.Connecting) {
-                    TextButton(onClick = onDisconnectClick) {
-                        Text(stringResource(R.string.disconnect), color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-
-            if (badgeStatus == BadgeStatus.Disconnected) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Conexão e pareamento são controlados apenas pela aba Pairing.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
 
@@ -226,7 +167,6 @@ private fun ActiveTripScreenPreview() {
                     discoveredServices = emptyList(),
                     transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
                 ),
-                isHost = true,
                 onStartTripClick = {},
                 onEndTripClick = {}
             )

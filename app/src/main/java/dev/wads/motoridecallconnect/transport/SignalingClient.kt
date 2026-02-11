@@ -38,7 +38,7 @@ class SignalingClient(private val listener: SignalingListener) {
         fun onOfferReceived(description: String)
         fun onAnswerReceived(description: String)
         fun onIceCandidateReceived(candidate: String)
-        fun onTripStatusReceived(active: Boolean, tripId: String? = null)
+        fun onTripStatusReceived(active: Boolean, tripId: String? = null, hostUid: String? = null)
         fun onSignalingError(error: Throwable)
     }
 
@@ -147,8 +147,10 @@ class SignalingClient(private val listener: SignalingListener) {
                 }
                 message.startsWith("ICE:") -> listener.onIceCandidateReceived(message.substringAfter("ICE:"))
                 message.startsWith("TRIP:START") -> {
-                    val tripId = message.substringAfter("TRIP:START:").takeIf { it != message }
-                    listener.onTripStatusReceived(true, tripId)
+                    val parts = message.split(":", limit = 4)
+                    val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }
+                    val hostUid = parts.getOrNull(3)?.takeIf { it.isNotBlank() }
+                    listener.onTripStatusReceived(true, tripId, hostUid)
                 }
                 message.startsWith("TRIP:STOP") -> listener.onTripStatusReceived(false)
             }
