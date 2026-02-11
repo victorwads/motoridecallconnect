@@ -36,12 +36,16 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
 
     companion object {
         private const val TAG = "AudioService"
         private const val CONTROL_CHANNEL_LABEL = "trip-control"
+        private const val REMOTE_TRACK_GAIN = 2.0
+        private const val TARGET_VOICE_CALL_VOLUME_RATIO = 0.95f
+        private const val TARGET_MUSIC_VOLUME_RATIO = 0.80f
         private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
         private const val AUDIO_SAMPLE_RATE_HZ = 48_000
         private const val AUDIO_BYTES_PER_SAMPLE = 2
@@ -92,10 +96,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isRtcConnected = false
     private var controlDataChannel: DataChannel? = null
     private var pendingTripStatusSync = false
+    private var isRemoteTransmitting = false
+    private var communicationProfileApplied = false
+    private var savedAudioMode: Int? = null
+    private var savedSpeakerphoneOn: Boolean? = null
+    private var savedMicrophoneMute: Boolean? = null
+    private var savedVoiceCallVolume: Int? = null
+    private var savedMusicVolume: Int? = null
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
         fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
+        fun onTransmissionStateChanged(isLocalTransmitting: Boolean, isRemoteTransmitting: Boolean)
         fun onTripStatusChanged(
             isActive: Boolean,
             tripId: String? = null,
@@ -136,15 +148,27 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             if (isRtcConnected && pendingTripStatusSync) {
                 sendTripStatusToPeer()
             }
+            updateCommunicationAudioProfile(reason = "ice_state_change")
         }
         override fun onIceConnectionReceivingChange(p0: Boolean) {}
         override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
-        override fun onAddStream(p0: MediaStream?) { Log.d("AudioService", "Received remote stream") }
+        override fun onAddStream(stream: MediaStream?) {
+            Log.d("AudioService", "Received remote stream")
+            stream?.audioTracks?.forEach { remoteTrack ->
+                remoteTrack.setEnabled(true)
+                remoteTrack.setVolume(REMOTE_TRACK_GAIN)
+            }
+        }
         override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
         override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
         override fun onRemoveStream(p0: MediaStream?) {}
         override fun onRenegotiationNeeded() {}
-        override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
+        override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+            val audioTrack = receiver?.track() as? org.webrtc.AudioTrack ?: return
+            audioTrack.setEnabled(true)
+            audioTrack.setVolume(REMOTE_TRACK_GAIN)
+            Log.i(TAG, "Remote audio track enabled with gain=$REMOTE_TRACK_GAIN")
+        }
     }
 
     inner class LocalBinder : Binder() {
@@ -178,6 +202,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     override fun onDestroy() {
         super.onDestroy()
+        restoreCommunicationAudioProfile(reason = "service_destroy")
         releaseAudioDucking()
         stopAudioCaptureIfNeeded(reason = "service_destroy")
         flushTranscriptionBuffer(force = true, reason = "service_destroy")
@@ -197,6 +222,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         this.callback = callback
         // Update immediately with current state
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
+        callback.onTransmissionStateChanged(isTransmitting, isRemoteTransmitting)
         callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
     }
 
@@ -205,6 +231,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             setHostingEnabled(false)
         }
         resetSignalingClient(startServer = false)
+        applyRemoteTransmissionState(false, source = "connect_to_peer")
         connectedPeer = device
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, device)
@@ -235,9 +262,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         connectionStatus = ConnectionStatus.DISCONNECTED
         isRtcConnected = false
         pendingTripStatusSync = false
+        isRemoteTransmitting = false
         setTransmitting(false, reason = "disconnect")
         syncOutgoingAudioState(reason = "disconnect_recreate_webrtc")
+        restoreCommunicationAudioProfile(reason = "disconnect")
         callback?.onConnectionStatusChanged(connectionStatus, null)
+        notifyTransmissionStateChanged()
     }
 
     fun setHostingEnabled(enabled: Boolean) {
@@ -324,6 +354,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         if (tripChanged && wasTripActive && !tripActive) {
             setTransmitting(false, reason = "trip_end")
+            applyRemoteTransmissionState(false, source = "trip_end")
             stopAudioCaptureIfNeeded(reason = "trip_end")
             flushTranscriptionBuffer(force = true, reason = "trip_end")
             speechRecognizerHelper?.stopListening()
@@ -404,6 +435,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             setTransmitting(false, reason = "mode_reset")
         }
         syncOutgoingAudioState(reason = "configuration_update")
+        updateCommunicationAudioProfile(reason = "configuration_update")
     }
 
     // --- SignalingListener Callbacks ---
@@ -440,6 +472,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (isTripActive) {
             sendTripStatusToPeer()
         }
+        sendTransmissionStateToPeer()
         syncOutgoingAudioState(reason = "peer_connected")
     }
 
@@ -522,12 +555,17 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
+    override fun onPeerTransmissionStateReceived(isTransmitting: Boolean) {
+        applyRemoteTransmissionState(isTransmitting, source = "signaling")
+    }
+
     override fun onTripStatusReceived(active: Boolean, tripId: String?, hostUid: String?, tripPath: String?) {
         applyRemoteTripStatus(active, tripId, hostUid, tripPath, source = "signaling")
     }
 
     override fun onPeerDisconnected() {
         Log.w(TAG, "Signaling peer disconnected")
+        applyRemoteTransmissionState(false, source = "peer_disconnected")
         if (isRtcConnected) {
             restartSignalingServer()
             return
@@ -540,6 +578,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     override fun onSignalingError(error: Throwable) {
         Log.e(TAG, "Signaling error", error)
+        applyRemoteTransmissionState(false, source = "signaling_error")
         if (isRtcConnected) {
             restartSignalingServer()
             return
@@ -666,6 +705,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private fun setTransmitting(transmitting: Boolean, reason: String) {
         if (isTransmitting == transmitting) {
+            notifyTransmissionStateChanged()
             syncOutgoingAudioState(reason = reason)
             return
         }
@@ -677,6 +717,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             releaseAudioDucking()
             Log.i(TAG, "Transmission OFF. reason=$reason")
         }
+        sendTransmissionStateToPeer()
+        notifyTransmissionStateChanged()
         syncOutgoingAudioState(reason = reason)
     }
 
@@ -687,6 +729,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private fun syncOutgoingAudioState(reason: String) {
         val enabled = shouldEnableOutgoingAudio()
         webRtcClient.setLocalAudioEnabled(enabled)
+        updateCommunicationAudioProfile(reason = "sync_outgoing_audio")
         Log.d(
             TAG,
             "Sync outgoing audio. enabled=$enabled, reason=$reason, tripActive=$isTripActive, " +
@@ -701,7 +744,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
-            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(playbackAttributes)
                 .setOnAudioFocusChangeListener(audioFocusChangeListener)
                 .build()
@@ -710,7 +753,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             audioManager.requestAudioFocus(
                 audioFocusChangeListener,
                 AudioManager.STREAM_VOICE_CALL,
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                AudioManager.AUDIOFOCUS_GAIN
             )
         }
     }
@@ -721,6 +764,70 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         } else {
             audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+    }
+
+    private fun shouldUseCommunicationAudioProfile(): Boolean {
+        return connectionStatus == ConnectionStatus.CONNECTING ||
+            isRtcConnected ||
+            isTripActive
+    }
+
+    private fun updateCommunicationAudioProfile(reason: String) {
+        if (shouldUseCommunicationAudioProfile()) {
+            applyCommunicationAudioProfile(reason)
+        } else {
+            restoreCommunicationAudioProfile(reason)
+        }
+    }
+
+    private fun applyCommunicationAudioProfile(reason: String) {
+        if (!communicationProfileApplied) {
+            savedAudioMode = audioManager.mode
+            savedSpeakerphoneOn = audioManager.isSpeakerphoneOn
+            savedMicrophoneMute = audioManager.isMicrophoneMute
+            savedVoiceCallVolume = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+            savedMusicVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            communicationProfileApplied = true
+        }
+
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = true
+        audioManager.isMicrophoneMute = false
+        boostStreamVolume(AudioManager.STREAM_VOICE_CALL, TARGET_VOICE_CALL_VOLUME_RATIO)
+        boostStreamVolume(AudioManager.STREAM_MUSIC, TARGET_MUSIC_VOLUME_RATIO)
+        Log.d(TAG, "Communication audio profile applied. reason=$reason")
+    }
+
+    private fun restoreCommunicationAudioProfile(reason: String) {
+        if (!communicationProfileApplied) {
+            return
+        }
+        savedAudioMode?.let { audioManager.mode = it }
+        savedSpeakerphoneOn?.let { audioManager.isSpeakerphoneOn = it }
+        savedMicrophoneMute?.let { audioManager.isMicrophoneMute = it }
+        savedVoiceCallVolume?.let { audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, it, 0) }
+        savedMusicVolume?.let { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, it, 0) }
+
+        communicationProfileApplied = false
+        savedAudioMode = null
+        savedSpeakerphoneOn = null
+        savedMicrophoneMute = null
+        savedVoiceCallVolume = null
+        savedMusicVolume = null
+        Log.d(TAG, "Communication audio profile restored. reason=$reason")
+    }
+
+    private fun boostStreamVolume(streamType: Int, ratio: Float) {
+        val maxVolume = audioManager.getStreamMaxVolume(streamType)
+        if (maxVolume <= 0) {
+            return
+        }
+        val safeRatio = ratio.coerceIn(0f, 1f)
+        val targetVolume = (maxVolume * safeRatio).roundToInt().coerceAtLeast(1)
+        val currentVolume = audioManager.getStreamVolume(streamType)
+        if (currentVolume < targetVolume) {
+            audioManager.setStreamVolume(streamType, targetVolume, 0)
         }
     }
 
@@ -825,6 +932,34 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         resetSignalingClient(startServer = isHostingEnabled)
     }
 
+    private fun sendTransmissionStateToPeer() {
+        val message = if (isTransmitting) "TX:ON" else "TX:OFF"
+        val sentByDataChannel = sendControlMessage(message)
+        val canSendBySignaling =
+            connectionStatus != ConnectionStatus.DISCONNECTED && connectionStatus != ConnectionStatus.ERROR
+        if (canSendBySignaling) {
+            signalingClient.sendMessage(message)
+        }
+        Log.d(
+            TAG,
+            "Sent transmission state. message=$message, viaDataChannel=$sentByDataChannel, " +
+                "viaSignaling=$canSendBySignaling"
+        )
+    }
+
+    private fun applyRemoteTransmissionState(transmitting: Boolean, source: String) {
+        if (isRemoteTransmitting == transmitting) {
+            return
+        }
+        isRemoteTransmitting = transmitting
+        Log.d(TAG, "Remote transmission updated. transmitting=$transmitting, source=$source")
+        notifyTransmissionStateChanged()
+    }
+
+    private fun notifyTransmissionStateChanged() {
+        callback?.onTransmissionStateChanged(isTransmitting, isRemoteTransmitting)
+    }
+
     private fun sendTripStatusToPeer(
         active: Boolean = isTripActive,
         tripId: String? = currentTripId,
@@ -878,8 +1013,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             override fun onStateChange() {
                 val state = channel.state()
                 Log.i(TAG, "Control data channel state=$state source=$source")
-                if (state == DataChannel.State.OPEN && pendingTripStatusSync) {
-                    sendTripStatusToPeer()
+                if (state == DataChannel.State.OPEN) {
+                    if (pendingTripStatusSync) {
+                        sendTripStatusToPeer()
+                    }
+                    sendTransmissionStateToPeer()
                 }
             }
 
@@ -914,6 +1052,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private fun handleControlChannelMessage(message: String) {
         when {
+            message.startsWith("TX:") -> {
+                val raw = message.substringAfter("TX:").trim().lowercase()
+                val transmitting = raw == "on" || raw == "1" || raw == "true"
+                applyRemoteTransmissionState(transmitting, source = "data_channel")
+            }
             message.startsWith("TRIP:START") -> {
                 val parts = message.split(":", limit = 5)
                 val tripId = parts.getOrNull(2)?.takeIf { it.isNotBlank() }

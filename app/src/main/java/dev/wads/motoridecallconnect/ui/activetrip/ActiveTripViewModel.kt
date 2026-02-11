@@ -38,6 +38,8 @@ data class ActiveTripUiState(
     val hostUid: String? = null,
     val tripPath: String? = null,
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
+    val isLocalTransmitting: Boolean = false,
+    val isRemoteTransmitting: Boolean = false,
     val connectedPeer: Device? = null,
     val transcript: List<String> = emptyList(),
     val isModelDownloading: Boolean = false,
@@ -127,7 +129,9 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                 tripStartTime = null,
                 currentTripId = null,
                 hostUid = null,
-                tripPath = null
+                tripPath = null,
+                isLocalTransmitting = false,
+                isRemoteTransmitting = false
             )
         }
 
@@ -159,7 +163,26 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
     }
 
     fun onConnectionStatusChanged(status: ConnectionStatus, peer: Device?) {
-        _uiState.update { it.copy(connectionStatus = status, connectedPeer = peer) }
+        _uiState.update {
+            it.copy(
+                connectionStatus = status,
+                connectedPeer = peer,
+                isRemoteTransmitting = if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.ERROR) {
+                    false
+                } else {
+                    it.isRemoteTransmitting
+                }
+            )
+        }
+    }
+
+    fun onTransmissionStateChanged(isLocalTransmitting: Boolean, isRemoteTransmitting: Boolean) {
+        _uiState.update {
+            it.copy(
+                isLocalTransmitting = isLocalTransmitting,
+                isRemoteTransmitting = isRemoteTransmitting
+            )
+        }
     }
 
     fun onTripStatusChanged(

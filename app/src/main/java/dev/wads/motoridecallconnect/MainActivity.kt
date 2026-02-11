@@ -258,6 +258,12 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
+    override fun onTransmissionStateChanged(isLocalTransmitting: Boolean, isRemoteTransmitting: Boolean) {
+        runOnUiThread {
+            activeTripViewModel.onTransmissionStateChanged(isLocalTransmitting, isRemoteTransmitting)
+        }
+    }
+
     override fun onTripStatusChanged(isActive: Boolean, tripId: String?, hostUid: String?, tripPath: String?) {
         runOnUiThread {
             activeTripViewModel.onTripStatusChanged(isActive, tripId, hostUid, tripPath)

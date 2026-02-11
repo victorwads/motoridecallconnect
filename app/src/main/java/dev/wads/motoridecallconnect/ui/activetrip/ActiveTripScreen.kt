@@ -1,6 +1,9 @@
 package dev.wads.motoridecallconnect.ui.activetrip
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,9 +27,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.CircleShape
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -130,6 +137,8 @@ fun ActiveTripScreen(
             }
         }
 
+        TransmissionStatusCard(uiState = uiState)
+
         if (!uiState.tripPath.isNullOrBlank()) {
             StatusCard(title = "Trip Sync Path", icon = Icons.Default.Call) {
                 Text(
@@ -163,6 +172,88 @@ fun ActiveTripScreen(
         }
         
         Spacer(modifier = Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun TransmissionStatusCard(uiState: ActiveTripUiState) {
+    val peerName = uiState.connectedPeer?.name?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.trip_peer_default_name)
+
+    val isConnected = uiState.connectionStatus == ConnectionStatus.CONNECTED
+    val localStatusText = if (uiState.isLocalTransmitting) {
+        stringResource(R.string.transmission_local_active)
+    } else {
+        stringResource(R.string.transmission_local_idle)
+    }
+    val remoteStatusText = when {
+        !isConnected -> stringResource(R.string.transmission_waiting_connection)
+        uiState.isRemoteTransmitting -> stringResource(R.string.transmission_remote_active)
+        else -> stringResource(R.string.transmission_remote_idle)
+    }
+
+    StatusCard(title = stringResource(R.string.transmission_status_title), icon = Icons.Default.Mic) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ParticipantTransmissionTile(
+                modifier = Modifier.weight(1f),
+                name = stringResource(R.string.transmission_you_label),
+                statusText = localStatusText,
+                isActive = uiState.isLocalTransmitting
+            )
+            ParticipantTransmissionTile(
+                modifier = Modifier.weight(1f),
+                name = peerName,
+                statusText = remoteStatusText,
+                isActive = isConnected && uiState.isRemoteTransmitting
+            )
+        }
+    }
+}
+
+@Composable
+private fun ParticipantTransmissionTile(
+    modifier: Modifier = Modifier,
+    name: String,
+    statusText: String,
+    isActive: Boolean
+) {
+    val borderColor = if (isActive) Color(0xFF22C55E) else MaterialTheme.colorScheme.outline
+    val fillColor = if (isActive) Color(0xFF22C55E).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant
+    val circleSize: Dp = 54.dp
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(circleSize)
+                .border(width = 3.dp, color = borderColor, shape = CircleShape)
+                .background(fillColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = name.trim().take(1).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Text(
+            text = name,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Text(
+            text = statusText,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (isActive) Color(0xFF22C55E) else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

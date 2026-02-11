@@ -22,6 +22,7 @@ class WebRtcClient(
 ) {
     companion object {
         private const val TAG = "WebRtcClient"
+        private const val LOCAL_TRACK_GAIN = 1.0
     }
 
     private val peerConnectionFactory: PeerConnectionFactory
@@ -53,9 +54,15 @@ class WebRtcClient(
         // Add existing tracks if any
     }
 
-    private val audioConstraints = MediaConstraints()
+    private val audioConstraints = MediaConstraints().apply {
+        mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+        mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+        mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+        mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+    }
     private val audioSource: AudioSource? = peerConnectionFactory.createAudioSource(audioConstraints)
     private val localAudioTrack: AudioTrack? = peerConnectionFactory.createAudioTrack("local_audio_track", audioSource).apply {
+        this?.setVolume(LOCAL_TRACK_GAIN)
         this?.setEnabled(false)
         this?.let { peerConnection?.addTrack(it) }
     }
