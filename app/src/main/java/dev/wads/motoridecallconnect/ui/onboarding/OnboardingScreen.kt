@@ -40,9 +40,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.local.UserPreferences
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -96,21 +98,21 @@ fun WelcomeStep(onNext: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 24.dp)) {
                     Icon(imageVector = Icons.Default.Radio, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text(text = "MotoTalk", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(text = stringResource(R.string.app_short_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 }
                 
                 Text(
-                    text = "Intercomunicador hands-free para motociclistas",
+                    text = stringResource(R.string.onboarding_subtitle),
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.padding(bottom = 24.dp)
                 )
                 
-                FeatureItem(Icons.Default.Mic, "Comunicação por voz em tempo real, sem tirar as mãos do guidão")
-                FeatureItem(Icons.Default.Radio, "Funciona via rede local / hotspot — sem depender de internet")
-                FeatureItem(Icons.Default.Bluetooth, "Funciona com tela bloqueada e fone Bluetooth")
+                FeatureItem(Icons.Default.Mic, stringResource(R.string.onboarding_feature_voice))
+                FeatureItem(Icons.Default.Radio, stringResource(R.string.onboarding_feature_local))
+                FeatureItem(Icons.Default.Bluetooth, stringResource(R.string.onboarding_feature_background))
             }
             
-            BigButton(text = "Começar", onClick = onNext, size = ButtonSize.Xl)
+            BigButton(text = stringResource(R.string.start_button), onClick = onNext, size = ButtonSize.Xl)
         }
     }
 }
@@ -144,25 +146,25 @@ fun PermissionsStep(onNext: () -> Unit) {
     ) {
         Column {
             Spacer(modifier = Modifier.height(48.dp))
-            Text(text = "Permissões necessárias", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(text = "Para funcionar corretamente, o app precisa de:", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 32.dp))
+            Text(text = stringResource(R.string.permissions_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(text = stringResource(R.string.permissions_desc), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 32.dp))
             
-            PermissionItem(Icons.Default.Mic, "Microfone", "Para captar sua voz (obrigatório)", true)
+            PermissionItem(Icons.Default.Mic, stringResource(R.string.perm_mic_title), stringResource(R.string.perm_mic_desc), true)
             Spacer(modifier = Modifier.height(16.dp))
-            PermissionItem(Icons.Default.Notifications, "Notificações", "Para manter o app ativo em segundo plano")
+            PermissionItem(Icons.Default.Notifications, stringResource(R.string.perm_notif_title), stringResource(R.string.perm_notif_desc))
             Spacer(modifier = Modifier.height(16.dp))
-            PermissionItem(Icons.Default.Bluetooth, "Bluetooth", "Para conectar seu fone sem fio")
+            PermissionItem(Icons.Default.Bluetooth, stringResource(R.string.perm_bluetooth_title), stringResource(R.string.perm_bluetooth_desc))
         }
         
         Column {
              Text(
-                 text = "Você pode gerenciar permissões nas configurações do app a qualquer momento.",
+                 text = stringResource(R.string.perm_manage_hint),
                  style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant,
                  modifier = Modifier.padding(bottom = 16.dp),
                  textAlign = androidx.compose.ui.text.style.TextAlign.Center
              )
-             BigButton(text = "Continuar", onClick = { launcher.launch(permissions.toTypedArray()) }, size = ButtonSize.Lg)
+             BigButton(text = stringResource(R.string.continue_button), onClick = { launcher.launch(permissions.toTypedArray()) }, size = ButtonSize.Lg)
         }
     }
 }
@@ -173,20 +175,20 @@ fun UsageModeStep(onComplete: (String) -> Unit) {
         modifier = Modifier.fillMaxSize().padding(24.dp),
     ) {
         Spacer(modifier = Modifier.height(48.dp))
-        Text(text = "Como você vai usar?", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(text = "Isso nos ajuda a personalizar a experiência.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 32.dp))
+        Text(text = stringResource(R.string.usage_title), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(text = stringResource(R.string.usage_desc), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 32.dp))
 
         UsageOption(
             icon = Icons.Default.Group,
-            title = "Com garupa",
-            description = "Conexão direta para conversar com quem está na mesma moto.",
+            title = stringResource(R.string.usage_pillion_title),
+            description = stringResource(R.string.usage_pillion_desc),
             onClick = { onComplete("garupa") }
         )
         Spacer(modifier = Modifier.height(16.dp))
         UsageOption(
             icon = Icons.Default.TwoWheeler,
-            title = "Com outra moto",
-            description = "Comunicação moto-a-moto em comboio (alcance limitado pelo Wi-Fi).",
+            title = stringResource(R.string.usage_other_bike_title),
+            description = stringResource(R.string.usage_other_bike_desc),
             onClick = { onComplete("piloto") }
         )
     }

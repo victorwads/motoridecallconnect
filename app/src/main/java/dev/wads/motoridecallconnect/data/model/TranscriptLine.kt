@@ -16,7 +16,7 @@ import androidx.room.PrimaryKey
 data class TranscriptLine(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val tripId: Long,
+    val tripId: String,
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
     val isPartial: Boolean

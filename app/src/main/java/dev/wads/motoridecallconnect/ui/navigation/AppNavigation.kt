@@ -15,6 +15,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -41,6 +42,8 @@ import dev.wads.motoridecallconnect.ui.history.TripHistoryScreen
 import dev.wads.motoridecallconnect.ui.history.TripHistoryViewModel
 import dev.wads.motoridecallconnect.ui.onboarding.OnboardingScreen
 import dev.wads.motoridecallconnect.ui.pairing.PairingScreen
+import dev.wads.motoridecallconnect.ui.friends.FriendsScreen
+import dev.wads.motoridecallconnect.ui.friends.FriendProfileScreen
 import dev.wads.motoridecallconnect.ui.settings.SettingsScreen
 
 @Composable
@@ -101,6 +104,8 @@ fun AppNavigation(
 
     val items = listOf(
         Screen.ActiveTrip,
+        Screen.Pairing,
+        Screen.Friends,
         Screen.TripHistory,
         Screen.Settings
     )
@@ -112,7 +117,7 @@ fun AppNavigation(
                 val currentDestination = navBackStackEntry?.destination
                 items.forEach { screen ->
                     NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = null) },
+                        icon = { Icon(stringResource(screen.label), contentDescription = null) },
                         label = { Text(screen.label) },
                         selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
                         onClick = {
@@ -159,7 +164,7 @@ fun AppNavigation(
                 TripHistoryScreen(
                     uiState = uiState,
                     onTripClick = { tripId ->
-                        navController.navigate("trip_detail/$tripId")
+                        navController.navigate(Screen.TripDetails.createRoute(tripId))
                     }
                 )
             }
@@ -177,18 +182,39 @@ fun AppNavigation(
                 )
             }
             composable(
-                route = "trip_detail/{tripId}",
-                arguments = listOf(navArgument("tripId") { type = NavType.LongType })
+                route = Screen.TripDetails.route,
+                arguments = listOf(navArgument("tripId") { type = NavType.StringType })
             ) { backStackEntry ->
-                val tripId = backStackEntry.arguments?.getLong("tripId") ?: 0L
+                val tripId = backStackEntry.arguments?.getString("tripId") ?: ""
                 TripDetailScreen(
                     tripId = tripId,
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
-            composable("pairing") {
+            composable(Screen.Pairing.route) {
                 PairingScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = { navController.popBackStack() },
+                    onPairSuccess = { /* Handle success if needed */ }
+                )
+            }
+            composable(Screen.Friends.route) {
+                FriendsScreen(
+                    onNavigateToProfile = { friendId ->
+                        navController.navigate(Screen.FriendProfile.createRoute(friendId))
+                    }
+                )
+            }
+            composable(
+                route = Screen.FriendProfile.route,
+                arguments = listOf(navArgument("friendId") { type = NavType.StringType })
+            ) { backStackEntry ->
+                val friendId = backStackEntry.arguments?.getString("friendId") ?: ""
+                FriendProfileScreen(
+                    friendId = friendId,
+                    onNavigateBack = { navController.popBackStack() },
+                    onInvitePair = { 
+                        navController.navigate(Screen.Pairing.route)
+                    }
                 )
             }
         }

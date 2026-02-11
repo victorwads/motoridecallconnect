@@ -36,9 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import dev.wads.motoridecallconnect.R
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,12 +79,12 @@ fun AudioTestModal(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Teste de áudio",
+                        stringResource(R.string.audio_test_title),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                     IconButton(onClick = onDismissRequest) {
-                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                        Icon(imageVector = Icons.Default.Close, contentDescription = stringResource(R.string.close_desc))
                     }
                 }
                 
@@ -91,7 +93,7 @@ fun AudioTestModal(
                 // Mic Level
                 Column {
                     Text(
-                        text = "Microfone ativo:",
+                        text = stringResource(R.string.mic_active_label),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

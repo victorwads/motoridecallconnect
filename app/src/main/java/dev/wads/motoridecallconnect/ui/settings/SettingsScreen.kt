@@ -43,9 +43,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
@@ -72,13 +74,13 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Configurações",
+            text = stringResource(R.string.settings_title),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold
         )
 
         // Account Section
-        StatusCard(title = "Conta", icon = Icons.Default.Person) {
+        StatusCard(title = stringResource(R.string.settings_account_section), icon = Icons.Default.Person) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(
@@ -90,7 +92,7 @@ fun SettingsScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = if (isLoggedIn) user!!.email?.take(1)?.uppercase() ?: "U" else "L",
+                            text = if (isLoggedIn) user!!.email?.take(1)?.uppercase() ?: stringResource(R.string.user_initial_default) else stringResource(R.string.user_initial_local),
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -98,11 +100,11 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = if (isLoggedIn) user!!.email ?: "Usuário" else "Modo Local",
+                            text = if (isLoggedIn) user!!.email ?: stringResource(R.string.user_default) else stringResource(R.string.local_mode),
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            text = if (isLoggedIn) "Conectado via Google" else "Conta não vinculada",
+                            text = if (isLoggedIn) stringResource(R.string.connected_via_google) else stringResource(R.string.account_not_linked),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -110,7 +112,7 @@ fun SettingsScreen(
                 }
                 
                 BigButton(
-                    text = if (isLoggedIn) "Sair da conta" else "Fazer Login",
+                    text = if (isLoggedIn) stringResource(R.string.sign_out) else stringResource(R.string.sign_in),
                     onClick = onLogout,
                     variant = ButtonVariant.Secondary,
                     icon = if (isLoggedIn) Icons.AutoMirrored.Filled.Logout else Icons.Default.Person,
@@ -120,7 +122,7 @@ fun SettingsScreen(
         }
 
         // Audio Section
-        StatusCard(title = "Áudio", icon = Icons.Default.VolumeUp) {
+        StatusCard(title = stringResource(R.string.audio_section), icon = Icons.Default.VolumeUp) {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -128,7 +130,7 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Preferir Bluetooth automaticamente",
+                        text = stringResource(R.string.prefer_bluetooth_auto),
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -151,7 +153,7 @@ fun SettingsScreen(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Testar áudio", style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.test_audio), style = MaterialTheme.typography.bodyMedium)
                     }
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
@@ -163,7 +165,7 @@ fun SettingsScreen(
 
                 Column {
                     Text(
-                        text = "Intensidade padrão de ducking: ${duckingIntensity.toInt()}%",
+                        text = stringResource(R.string.ducking_intensity_label, duckingIntensity.toInt()),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
@@ -178,7 +180,7 @@ fun SettingsScreen(
 
                 Column {
                     Text(
-                        text = "Fones recomendados",
+                        text = stringResource(R.string.recommended_headphones_title),
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
@@ -190,20 +192,20 @@ fun SettingsScreen(
                              .padding(12.dp)
                     ) {
                         Text(
-                            text = "🎧 Samsung Galaxy Buds3 Pro",
+                            text = stringResource(R.string.headphones_samsung_buds3),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
                         Text(
-                            text = "IA embarcada com comandos de voz nativos e cancelamento de ruído no microfone — voz cristalina dentro do capacete.",
+                            text = stringResource(R.string.headphones_samsung_desc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                          Text(
-                            text = "Também recomendados: Sony WF-1000XM5 · AirPods Pro 2 · Bose QC Ultra Earbuds",
+                            text = stringResource(R.string.headphones_others),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

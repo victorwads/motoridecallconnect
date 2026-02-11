@@ -13,13 +13,20 @@ enum class OperatingMode {
     CONTINUOUS_TRANSMISSION
 }
 
+enum class ConnectionStatus {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    ERROR
+}
+
 data class ActiveTripUiState(
     val discoveredServices: List<NsdServiceInfo> = emptyList(),
     val operatingMode: OperatingMode = OperatingMode.VOICE_COMMAND,
     val startCommand: String = "iniciar",
     val stopCommand: String = "parar",
     val isRecordingTranscript: Boolean = true,
-    val connectionStatus: String = "Desconectado",
+    val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val transcript: List<String> = emptyList()
 )
 

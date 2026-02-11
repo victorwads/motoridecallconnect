@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Moto Ride Call Connect</string>
+
     <string name="title_activity_settings">SettingsActivity</string>
 
     <!-- Preference Titles -->
@@ -16,4 +17,133 @@
     <string name="attachment_summary_on">Automatically download attachments for incoming emails
     </string>
     <string name="attachment_summary_off">Only download attachments when manually requested</string>
+
+    <!-- Settings Screen -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_account_section">Account</string>
+    <string name="user_initial_default">U</string>
+    <string name="user_initial_local">L</string>
+    <string name="local_mode">Local Mode</string>
+    <string name="user_default">User</string>
+    <string name="connected_via_google">Connected via Google</string>
+    <string name="account_not_linked">Account not linked</string>
+    <string name="sign_out">Sign out</string>
+    <string name="sign_in">Log in</string>
+    <string name="audio_section">Audio</string>
+    <string name="prefer_bluetooth_auto">Prefer Bluetooth automatically</string>
+    <string name="test_audio">Test audio</string>
+    <string name="ducking_intensity_label">Default ducking intensity: %1$d%%</string>
+    <string name="recommended_headphones_title">Recommended headphones</string>
+    <string name="headphones_samsung_buds3">🎧 Samsung Galaxy Buds3 Pro</string>
+    <string name="headphones_samsung_desc">Embedded AI with native voice commands and microphone noise cancellation — crystal clear voice inside the helmet.</string>
+    <string name="headphones_others">Also recommended: Sony WF-1000XM5 · AirPods Pro 2 · Bose QC Ultra Earbuds</string>
+    
+    <!-- Pairing Screen -->
+    <string name="pairing_title">Pairing</string>
+    <string name="quick_pair_tab">Quick Pair</string>
+    <string name="rooms_tab">Rooms</string>
+    <string name="nearby_devices_title">Nearby devices</string>
+    <string name="use_pairing_code">Use pairing code</string>
+    <string name="no_rooms_found">No rooms found</string>
+    <string name="create_room_hint">Create a room to invite distinct friends.</string>
+    <string name="back">Back</string>
+    <string name="pairing_card_title">Pairing</string>
+    <string name="connect">Connect</string>
+    <string name="connect_and_start_trip">Connect and start trip</string>
+    <string name="connecting">Connecting...</string>
+    <string name="connected">Connected!</string>
+    <string name="pairing_code_title">Code Pairing</string>
+    <string name="pairing_code_instructions">Enter the code displayed on the other device screen.</string>
+    <string name="pairing_code_label">Pairing code</string>
+    <string name="connect_devices_action">Connect devices</string>
+
+    <!-- Active Trip Screen -->
+    <string name="app_short_title">MotoTalk</string>
+    <string name="live_indicator">● LIVE</string>
+    <string name="connection_header">Connection</string>
+    <string name="pair_now">Pair now</string>
+    <string name="discovered_devices_header">Discovered devices:</string>
+    <string name="connect_to_device_format">Connect to %1$s</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="trip_header">Trip</string>
+    <string name="end_trip_action">End Trip</string>
+    <string name="start_trip_action">Start Trip</string>
+    <string name="config_header">Configuration</string>
+    <string name="operation_mode_header">Operation Mode</string>
+    <string name="start_command_label">Start Command</string>
+    <string name="stop_command_label">Stop Command</string>
+    <string name="record_transcript_label">Record Transcript</string>
+    <string name="transcript_partial_prefix">Partial: </string>
+    
+    <string name="status_connected">Connected</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_error">Error</string>
+    <string name="status_disconnected">Disconnected</string>
+
+    <string name="mode_voice_command">Voice Command</string>
+    <string name="mode_vad">Voice Activity Detection</string>
+    <string name="mode_continuous">Continuous Transmission</string>
+
+    <!-- Navigation & History -->
+    <string name="nav_active_trip">Home</string>
+    <string name="nav_pairing">Pair</string>
+    <string name="nav_friends">Friends</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Config</string>
+    <string name="nav_details">Details</string>
+    <string name="nav_profile">Profile</string>
+
+    <string name="history_title">History</string>
+    <string name="period_label">Period:</string>
+    <string name="filter_all">All</string>
+    <string name="filter_today">Today</string>
+    <string name="filter_7days">7 days</string>
+    <string name="filter_with_transcript">With transcript</string>
+    <string name="filter_without_transcript">Without transcript</string>
+    <string name="no_trips_title">No trips</string>
+    <string name="no_trips_desc">Your trips will appear here after they end.</string>
+
+    <!-- Trip Details -->
+    <string name="summary_title">Summary</string>
+    <string name="date_label">Date</string>
+    <string name="duration_label">Duration</string>
+    <string name="with_label">With</string>
+    <string name="mode_label">Mode</string>
+    <string name="unknown_device">Unknown</string>
+    <string name="mode_automatic">Automatic</string>
+    <string name="full_transcript_title">Full Transcript</string>
+
+    <string name="audio_test_title">Audio Test</string>
+    <string name="mic_active_label">Active Microphone:</string>
+    <string name="close_desc">Close</string>
+
+    <string name="friends_title">Friends</string>
+    <string name="add_friend_desc">Add friend</string>
+    <string name="search_placeholder">Search by name...</string>
+    <string name="friend_not_found">Friend not found.</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_subtitle">Hands-free intercom for motorcyclists</string>
+    <string name="onboarding_feature_voice">Real-time voice communication, without taking hands off the handlebars</string>
+    <string name="onboarding_feature_local">Works via local network / hotspot — no internet required</string>
+    <string name="onboarding_feature_background">Works with screen locked and Bluetooth headset</string>
+    <string name="start_button">Get Started</string>
+
+    <string name="permissions_title">Required Permissions</string>
+    <string name="permissions_desc">To work correctly, the app needs:</string>
+    <string name="perm_mic_title">Microphone</string>
+    <string name="perm_mic_desc">To capture your voice (required)</string>
+    <string name="perm_notif_title">Notifications</string>
+    <string name="perm_notif_desc">To keep the app active in the background</string>
+    <string name="perm_bluetooth_title">Bluetooth</string>
+    <string name="perm_bluetooth_desc">To connect your wireless headset</string>
+    <string name="perm_manage_hint">You can manage permissions in app settings at any time.</string>
+    <string name="continue_button">Continue</string>
+
+    <string name="usage_title">How will you use it?</string>
+    <string name="usage_desc">This helps us personalize the experience.</string>
+    <string name="usage_pillion_title">With passenger</string>
+    <string name="usage_pillion_desc">Direct connection to talk with someone on the same bike.</string>
+    <string name="usage_other_bike_title">With another bike</string>
+    <string name="usage_other_bike_desc">Bike-to-bike communication in convoy (range limited by Wi-Fi).</string>
 </resources>

@@ -38,9 +38,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.ui.components.EmptyState
 import java.text.SimpleDateFormat
@@ -50,7 +52,7 @@ import java.util.Locale
 @Composable
 fun TripHistoryScreen(
     uiState: TripHistoryUiState,
-    onTripClick: (Long) -> Unit
+    onTripClick: (String) -> Unit
 ) {
     // Local filter state
     var periodFilter by remember { mutableStateOf("all") }
@@ -62,7 +64,7 @@ fun TripHistoryScreen(
             .padding(16.dp)
     ) {
         Text(
-            text = "Histórico",
+            text = stringResource(R.string.history_title),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 16.dp)
@@ -73,18 +75,18 @@ fun TripHistoryScreen(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
                 Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Gray)
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Período:", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(stringResource(R.string.period_label), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 12.dp)) {
-                FilterButton("Todos", periodFilter == "all") { periodFilter = "all" }
-                FilterButton("Hoje", periodFilter == "today") { periodFilter = "today" }
-                FilterButton("7 dias", periodFilter == "7days") { periodFilter = "7days" }
+                FilterButton(stringResource(R.string.filter_all), periodFilter == "all") { periodFilter = "all" }
+                FilterButton(stringResource(R.string.filter_today), periodFilter == "today") { periodFilter = "today" }
+                FilterButton(stringResource(R.string.filter_7days), periodFilter == "7days") { periodFilter = "7days" }
             }
             
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterButton("Todos", transcriptFilter == "all") { transcriptFilter = "all" }
-                FilterButton("Com transcrição", transcriptFilter == "with") { transcriptFilter = "with" }
-                FilterButton("Sem transcrição", transcriptFilter == "without") { transcriptFilter = "without" }
+                FilterButton(stringResource(R.string.filter_all), transcriptFilter == "all") { transcriptFilter = "all" }
+                FilterButton(stringResource(R.string.filter_with_transcript), transcriptFilter == "with") { transcriptFilter = "with" }
+                FilterButton(stringResource(R.string.filter_without_transcript), transcriptFilter == "without") { transcriptFilter = "without" }
             }
         }
 
@@ -95,8 +97,8 @@ fun TripHistoryScreen(
         } else if (uiState.trips.isEmpty()) {
             EmptyState(
                 icon = Icons.Default.Schedule,
-                title = "Nenhuma viagem",
-                description = "Suas viagens aparecerão aqui após serem finalizadas."
+                title = stringResource(R.string.no_trips_title),
+                description = stringResource(R.string.no_trips_desc)
             )
         } else {
             // Apply filters (mock implementation using simplistic conditions as Date parsing is needed)
@@ -216,8 +218,8 @@ private fun TripHistoryScreenPreview() {
             TripHistoryScreen(
                 uiState = TripHistoryUiState(
                     trips = listOf(
-                        dev.wads.motoridecallconnect.data.model.Trip(1, System.currentTimeMillis(), System.currentTimeMillis() + 3600000, 3600000, "Galaxy S23"),
-                        dev.wads.motoridecallconnect.data.model.Trip(2, System.currentTimeMillis() - 86400000, System.currentTimeMillis() - 82800000, 3600000, "iPhone 15")
+                        dev.wads.motoridecallconnect.data.model.Trip("1", System.currentTimeMillis(), System.currentTimeMillis() + 3600000, 3600000, "Galaxy S23"),
+                        dev.wads.motoridecallconnect.data.model.Trip("2", System.currentTimeMillis() - 86400000, System.currentTimeMillis() - 82800000, 3600000, "iPhone 15")
                     )
                 ),
                 onTripClick = {}

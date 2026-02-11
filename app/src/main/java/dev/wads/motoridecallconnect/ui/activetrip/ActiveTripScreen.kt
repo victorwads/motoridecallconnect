@@ -30,9 +30,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BadgeStatus
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -52,10 +54,17 @@ fun ActiveTripScreen(
     onRecordingToggle: (Boolean) -> Unit
 ) {
     val badgeStatus = when (uiState.connectionStatus) {
-        "Conectado" -> BadgeStatus.Connected
-        "Conectando" -> BadgeStatus.Connecting
-        "Erro" -> BadgeStatus.Error
+        ConnectionStatus.CONNECTED -> BadgeStatus.Connected
+        ConnectionStatus.CONNECTING -> BadgeStatus.Connecting
+        ConnectionStatus.ERROR -> BadgeStatus.Error
         else -> BadgeStatus.Disconnected
+    }
+    
+    val connectionStatusLabel = when (uiState.connectionStatus) {
+        ConnectionStatus.CONNECTED -> stringResource(R.string.status_connected)
+        ConnectionStatus.CONNECTING -> stringResource(R.string.status_connecting)
+        ConnectionStatus.ERROR -> stringResource(R.string.status_error)
+        else -> stringResource(R.string.status_disconnected)
     }
 
     Column(
@@ -79,14 +88,14 @@ fun ActiveTripScreen(
                     modifier = Modifier.padding(end = 8.dp)
                 )
                 Text(
-                    text = "MotoTalk",
+                    text = stringResource(R.string.app_short_title),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
             }
-            if (uiState.connectionStatus == "Conectado") {
+            if (uiState.connectionStatus == ConnectionStatus.CONNECTED) {
                 Text(
-                    text = "● AO VIVO",
+                    text = stringResource(R.string.live_indicator),
                     color = Color(0xFF22C55E), // SuccessGreen
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp
@@ -95,14 +104,14 @@ fun ActiveTripScreen(
         }
 
         // --- Connection Status ---
-        StatusCard(title = "Conexão", icon = Icons.Default.Share) { // Placeholder for Link2
+        StatusCard(title = stringResource(R.string.connection_header), icon = Icons.Default.Share) { // Placeholder for Link2
             Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                StatusBadge(status = badgeStatus, label = uiState.connectionStatus)
+                StatusBadge(status = badgeStatus, label = connectionStatusLabel)
             }
 
             if (badgeStatus == BadgeStatus.Disconnected) {
                 BigButton(
-                    text = "Parear agora",
+                    text = stringResource(R.string.pair_now),
                     onClick = onStartDiscoveryClick,
                     variant = ButtonVariant.Outline,
                     fullWidth = true
@@ -112,7 +121,7 @@ fun ActiveTripScreen(
                 if (uiState.discoveredServices.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Dispositivos encontrados:",
+                        text = stringResource(R.string.discovered_devices_header),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -123,14 +132,14 @@ fun ActiveTripScreen(
                             onClick = { /* TODO connection callback */ },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                         ) {
-                            Text("Conectar a ${service.serviceName}")
+                            Text(stringResource(R.string.connect_to_device_format, service.serviceName))
                         }
                     }
                 }
                 
             } else if (badgeStatus == BadgeStatus.Connected) {
                  BigButton(
-                    text = "Desconectar",
+                    text = stringResource(R.string.disconnect),
                     onClick = { /* TODO: Disconnect */ },
                     variant = ButtonVariant.Destructive,
                     fullWidth = true
@@ -139,12 +148,12 @@ fun ActiveTripScreen(
         }
 
         // --- Trip Controls ---
-        StatusCard(title = "Viagem", icon = Icons.Default.PlayArrow) {
+        StatusCard(title = stringResource(R.string.trip_header), icon = Icons.Default.PlayArrow) {
             // Timer UI would be here
             
-            if (uiState.connectionStatus == "Conectado") { // Assuming trip is started if connected for now
+            if (uiState.connectionStatus == ConnectionStatus.CONNECTED) { // Assuming trip is started if connected for now
                  BigButton(
-                    text = "Finalizar Viagem",
+                    text = stringResource(R.string.end_trip_action),
                     onClick = onEndTripClick,
                     variant = ButtonVariant.Destructive,
                     icon = Icons.Default.Stop,
@@ -153,7 +162,7 @@ fun ActiveTripScreen(
                  )
             } else {
                  BigButton(
-                    text = "Iniciar Viagem",
+                    text = stringResource(R.string.start_trip_action),
                     onClick = onStartTripClick,
                     variant = ButtonVariant.Success,
                     icon = Icons.Default.PlayArrow,
@@ -164,8 +173,8 @@ fun ActiveTripScreen(
         }
 
         // --- Configuration ---
-        StatusCard(title = "Configuração", icon = Icons.Default.Settings) {
-            Text("Modo de Operação", style = MaterialTheme.typography.titleSmall)
+        StatusCard(title = stringResource(R.string.config_header), icon = Icons.Default.Settings) {
+            Text(stringResource(R.string.operation_mode_header), style = MaterialTheme.typography.titleSmall)
             
             OperatingMode.values().forEach { mode ->
                 Row(
@@ -182,7 +191,12 @@ fun ActiveTripScreen(
                         selected = (uiState.operatingMode == mode),
                         onClick = { onModeChange(mode) }
                     )
-                    Text(text = mode.name.replace("_", " "))
+                    val modeText = when(mode) {
+                        OperatingMode.VOICE_COMMAND -> stringResource(R.string.mode_voice_command)
+                        OperatingMode.VOICE_ACTIVITY_DETECTION -> stringResource(R.string.mode_vad)
+                        OperatingMode.CONTINUOUS_TRANSMISSION -> stringResource(R.string.mode_continuous)
+                    }
+                    Text(text = modeText)
                 }
             }
 
@@ -191,21 +205,21 @@ fun ActiveTripScreen(
                 OutlinedTextField(
                     value = uiState.startCommand,
                     onValueChange = onStartCommandChange,
-                    label = { Text("Comando para Iniciar") },
+                    label = { Text(stringResource(R.string.start_command_label)) },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = uiState.stopCommand,
                     onValueChange = onStopCommandChange,
-                    label = { Text("Comando para Parar") },
+                    label = { Text(stringResource(R.string.stop_command_label)) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
             
             Spacer(modifier = Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Gravar Transcrição")
+                Text(stringResource(R.string.record_transcript_label))
                 Spacer(modifier = Modifier.weight(1f))
                 Switch(
                     checked = uiState.isRecordingTranscript, 
@@ -225,7 +239,7 @@ private fun ActiveTripScreenPreview() {
         androidx.compose.material3.Surface {
             ActiveTripScreen(
                 uiState = ActiveTripUiState(
-                    connectionStatus = "Conectado",
+                    connectionStatus = ConnectionStatus.CONNECTED,
                     discoveredServices = emptyList(),
                     transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
                 ),

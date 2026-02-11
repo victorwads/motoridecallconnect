@@ -31,9 +31,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
@@ -44,7 +46,7 @@ import java.util.Locale
 
 @Composable
 fun TripDetailScreen(
-    tripId: Long,
+    tripId: String,
     onNavigateBack: () -> Unit
 ) {
     // Mock trip data fetch based on ID
@@ -72,24 +74,24 @@ fun TripDetailScreen(
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(onClick = onNavigateBack)) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Histórico", color = MaterialTheme.colorScheme.primary)
+            Text(stringResource(R.string.history_title), color = MaterialTheme.colorScheme.primary)
         }
 
-        StatusCard(title = "Resumo", icon = Icons.Default.Schedule) {
+        StatusCard(title = stringResource(R.string.summary_title), icon = Icons.Default.Schedule) {
             Column {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                     DetailItem("Data", formatDate(trip.startTime))
-                     DetailItem("Duração", "01:00:00") // Mock
+                     DetailItem(stringResource(R.string.date_label), formatDate(trip.startTime))
+                     DetailItem(stringResource(R.string.duration_label), "01:00:00") // Mock
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                     DetailItem("Com", trip.peerDevice ?: "Desconhecido")
-                     DetailItem("Modo", "Automático")
+                     DetailItem(stringResource(R.string.with_label), trip.peerDevice ?: stringResource(R.string.unknown_device))
+                     DetailItem(stringResource(R.string.mode_label), stringResource(R.string.mode_automatic))
                 }
             }
         }
 
-        StatusCard(title = "Transcrição completa", icon = Icons.Default.Description) {
+        StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 mockTranscript.forEach { (time, text) ->
                     Row {
@@ -153,7 +155,7 @@ private fun formatDate(timestamp: Long): String {
 private fun TripDetailScreenPreview() {
     dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme {
         androidx.compose.material3.Surface {
-            TripDetailScreen(tripId = 1, onNavigateBack = {})
+            TripDetailScreen(tripId = "1", onNavigateBack = {})
         }
     }
 }
