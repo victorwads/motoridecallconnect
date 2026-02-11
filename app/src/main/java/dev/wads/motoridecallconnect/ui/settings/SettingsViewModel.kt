@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.wads.motoridecallconnect.data.local.UserPreferences
+import dev.wads.motoridecallconnect.stt.NativeSpeechLanguageCatalog
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
@@ -25,6 +26,7 @@ data class SettingsUiState(
     val stopCommand: String = "parar",
     val isRecordingTranscript: Boolean = true,
     val sttEngine: SttEngine = SttEngine.WHISPER,
+    val nativeSpeechLanguageTag: String = NativeSpeechLanguageCatalog.defaultOption.tag,
     val whisperModelId: String = WhisperModelCatalog.defaultOption.id,
     val vadStartDelaySeconds: Float = DEFAULT_VAD_START_DELAY_SECONDS,
     val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS,
@@ -69,6 +71,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             preferences.sttEngine.collect { raw ->
                 val engine = parseSttEngine(raw) ?: return@collect
                 _uiState.update { it.copy(sttEngine = engine) }
+            }
+        }
+        viewModelScope.launch {
+            preferences.nativeSpeechLanguageTag.collect { saved ->
+                val tag = NativeSpeechLanguageCatalog.normalizeTag(saved)
+                _uiState.update { it.copy(nativeSpeechLanguageTag = tag) }
             }
         }
         viewModelScope.launch {
@@ -132,6 +140,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(sttEngine = engine) }
         viewModelScope.launch {
             preferences.setSttEngine(engine.name)
+        }
+    }
+
+    fun onNativeSpeechLanguageChange(languageTag: String) {
+        val normalized = NativeSpeechLanguageCatalog.normalizeTag(languageTag)
+        _uiState.update { it.copy(nativeSpeechLanguageTag = normalized) }
+        viewModelScope.launch {
+            preferences.setNativeSpeechLanguageTag(normalized)
         }
     }
 

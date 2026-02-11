@@ -23,6 +23,7 @@ class UserPreferences(private val context: Context) {
         val STOP_COMMAND = stringPreferencesKey("stop_command")
         val RECORD_TRANSCRIPT = booleanPreferencesKey("record_transcript")
         val STT_ENGINE = stringPreferencesKey("stt_engine")
+        val NATIVE_SPEECH_LANGUAGE_TAG = stringPreferencesKey("native_speech_language_tag")
         val WHISPER_MODEL_ID = stringPreferencesKey("whisper_model_id")
         val VAD_START_DELAY_SECONDS = floatPreferencesKey("vad_start_delay_seconds")
         val VAD_STOP_DELAY_SECONDS = floatPreferencesKey("vad_stop_delay_seconds")
@@ -67,6 +68,11 @@ class UserPreferences(private val context: Context) {
     val sttEngine: Flow<String?> = context.dataStore.data
         .map { preferences ->
             preferences[STT_ENGINE]
+        }
+
+    val nativeSpeechLanguageTag: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[NATIVE_SPEECH_LANGUAGE_TAG]
         }
 
     val whisperModelId: Flow<String?> = context.dataStore.data
@@ -134,6 +140,12 @@ class UserPreferences(private val context: Context) {
     suspend fun setSttEngine(engine: String) {
         context.dataStore.edit { preferences ->
             preferences[STT_ENGINE] = engine
+        }
+    }
+
+    suspend fun setNativeSpeechLanguageTag(tag: String) {
+        context.dataStore.edit { preferences ->
+            preferences[NATIVE_SPEECH_LANGUAGE_TAG] = tag
         }
     }
 

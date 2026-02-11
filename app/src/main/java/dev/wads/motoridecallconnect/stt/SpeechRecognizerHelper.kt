@@ -25,7 +25,8 @@ class SpeechRecognizerHelper(
     private val context: Context,
     private val listener: SpeechRecognitionListener,
     initialModelId: String = WhisperModelCatalog.defaultOption.id,
-    initialEngine: SttEngine = SttEngine.WHISPER
+    initialEngine: SttEngine = SttEngine.WHISPER,
+    initialNativeLanguageTag: String = NativeSpeechLanguageCatalog.defaultOption.tag
 ) {
 
     companion object {
@@ -50,6 +51,7 @@ class SpeechRecognizerHelper(
     private var selectedModel: WhisperModelOption =
         WhisperModelCatalog.findById(initialModelId) ?: WhisperModelCatalog.defaultOption
     private var selectedEngine: SttEngine = initialEngine
+    private var selectedNativeLanguageTag: String = NativeSpeechLanguageCatalog.normalizeTag(initialNativeLanguageTag)
 
     var isUsingWhisper = false
         private set
@@ -84,6 +86,7 @@ class SpeechRecognizerHelper(
         Log.i(
             TAG,
             "SpeechRecognizerHelper ready. engine=$selectedEngine, model=${selectedModel.id}, " +
+                "nativeLanguage=$selectedNativeLanguageTag, " +
                 "file=${selectedModel.fileName}, lazyInitDuringTrip=true"
         )
     }
@@ -138,6 +141,18 @@ class SpeechRecognizerHelper(
             "Whisper model changed from ${previousModel.id} to ${selectedModel.id}. " +
                 "file=${selectedModel.fileName}"
         )
+    }
+
+    fun setNativeLanguageTag(languageTag: String) {
+        val normalized = NativeSpeechLanguageCatalog.normalizeTag(languageTag)
+        if (selectedNativeLanguageTag == normalized) {
+            return
+        }
+        selectedNativeLanguageTag = normalized
+        Log.i(TAG, "Native STT language changed to $selectedNativeLanguageTag")
+        if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            restartLegacyNativeRecognizer()
+        }
     }
 
     private fun checkAndInitWhisper(): Boolean {
@@ -244,7 +259,11 @@ class SpeechRecognizerHelper(
         if (selectedEngine == SttEngine.WHISPER) {
             val whisperReady = checkAndInitWhisper()
             if (whisperReady) {
-                Log.i(TAG, "Using Whisper mode (${selectedModel.id}). Waiting for PCM chunks from AudioService.")
+                Log.i(
+                    TAG,
+                    "Using Whisper mode (${selectedModel.id}) with automatic language detection. " +
+                        "Waiting for PCM chunks from AudioService."
+                )
                 return
             }
 
@@ -259,7 +278,11 @@ class SpeechRecognizerHelper(
             return
         }
 
-        Log.i(TAG, "Using Android native SpeechRecognizer chunk mode. engine=$selectedEngine")
+        Log.i(
+            TAG,
+            "Using Android native SpeechRecognizer chunk mode. engine=$selectedEngine, " +
+                "language=$selectedNativeLanguageTag"
+        )
     }
 
     fun stopListening() {
@@ -411,7 +434,10 @@ class SpeechRecognizerHelper(
                 recognizer.startListening(createLegacyNativeIntent())
                 legacyNativeRecognizer = recognizer
                 isLegacyNativeSessionRunning = true
-                Log.i(TAG, "Using legacy native SpeechRecognizer mode (API < 33).")
+                Log.i(
+                    TAG,
+                    "Using legacy native SpeechRecognizer mode (API < 33). language=$selectedNativeLanguageTag"
+                )
             } catch (t: Throwable) {
                 isLegacyNativeSessionRunning = false
                 listener.onError("Native recognizer start failed: ${t.message}")
@@ -452,6 +478,7 @@ class SpeechRecognizerHelper(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+            applyNativeLanguage(this)
         }
     }
 
@@ -640,6 +667,7 @@ class SpeechRecognizerHelper(
                     putExtra(EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
                     putExtra(EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
                     putExtra(EXTRA_AUDIO_SOURCE_SAMPLING_RATE, CAPTURE_SAMPLE_RATE_HZ)
+                    applyNativeLanguage(this)
                 }
 
                 recognizer?.startListening(intent)
@@ -731,6 +759,12 @@ class SpeechRecognizerHelper(
             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Too many requests"
             else -> "Unknown recognizer error"
         }
+    }
+
+    private fun applyNativeLanguage(intent: Intent) {
+        val languageTag = selectedNativeLanguageTag
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
     }
 
     private fun downsampleToWhisperRate(input: FloatArray): FloatArray {

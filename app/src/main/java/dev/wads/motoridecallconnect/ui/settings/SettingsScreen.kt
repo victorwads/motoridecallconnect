@@ -60,6 +60,7 @@ import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import dev.wads.motoridecallconnect.stt.NativeSpeechLanguageCatalog
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
@@ -72,6 +73,7 @@ fun SettingsScreen(
     stopCommand: String,
     isRecordingTranscript: Boolean,
     sttEngine: SttEngine,
+    nativeSpeechLanguageTag: String,
     whisperModelId: String,
     vadStartDelaySeconds: Float,
     vadStopDelaySeconds: Float,
@@ -81,6 +83,7 @@ fun SettingsScreen(
     onStopCommandChange: (String) -> Unit,
     onRecordingToggle: (Boolean) -> Unit,
     onSttEngineChange: (SttEngine) -> Unit,
+    onNativeSpeechLanguageChange: (String) -> Unit,
     onWhisperModelChange: (String) -> Unit,
     onVadStartDelayChange: (Float) -> Unit,
     onVadStopDelayChange: (Float) -> Unit,
@@ -92,8 +95,12 @@ fun SettingsScreen(
     val user = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
     val isLoggedIn = user != null
     var whisperModelExpanded by remember { mutableStateOf(false) }
+    var nativeLanguageExpanded by remember { mutableStateOf(false) }
     val selectedWhisperModel = remember(whisperModelId) {
         WhisperModelCatalog.findById(whisperModelId) ?: WhisperModelCatalog.defaultOption
+    }
+    val selectedNativeLanguage = remember(nativeSpeechLanguageTag) {
+        NativeSpeechLanguageCatalog.findByTag(nativeSpeechLanguageTag) ?: NativeSpeechLanguageCatalog.defaultOption
     }
     
     // Mock State - In a real app, this would come from a ViewModel/DataStore
@@ -270,6 +277,61 @@ fun SettingsScreen(
                 }
             }
 
+            if (sttEngine == SttEngine.NATIVE) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = stringResource(R.string.native_language_header),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = stringResource(R.string.native_language_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                )
+                ExposedDropdownMenuBox(
+                    expanded = nativeLanguageExpanded,
+                    onExpandedChange = { nativeLanguageExpanded = !nativeLanguageExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedNativeLanguage.displayName,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth(),
+                        label = { Text(stringResource(R.string.native_language_header)) },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = nativeLanguageExpanded)
+                        }
+                    )
+                    DropdownMenu(
+                        expanded = nativeLanguageExpanded,
+                        onDismissRequest = { nativeLanguageExpanded = false }
+                    ) {
+                        NativeSpeechLanguageCatalog.options.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = option.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (option.tag == selectedNativeLanguage.tag) {
+                                            FontWeight.SemiBold
+                                        } else {
+                                            FontWeight.Normal
+                                        }
+                                    )
+                                },
+                                onClick = {
+                                    onNativeSpeechLanguageChange(option.tag)
+                                    nativeLanguageExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             if (sttEngine == SttEngine.WHISPER) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(stringResource(R.string.whisper_model_header), style = MaterialTheme.typography.titleSmall)
@@ -331,6 +393,12 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = selectedWhisperModel.details,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.whisper_language_auto_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -453,6 +521,7 @@ private fun SettingsScreenPreview() {
                 stopCommand = "parar",
                 isRecordingTranscript = true,
                 sttEngine = SttEngine.WHISPER,
+                nativeSpeechLanguageTag = NativeSpeechLanguageCatalog.defaultOption.tag,
                 whisperModelId = WhisperModelCatalog.defaultOption.id,
                 vadStartDelaySeconds = 0f,
                 vadStopDelaySeconds = 1.5f,
@@ -462,6 +531,7 @@ private fun SettingsScreenPreview() {
                 onStopCommandChange = {},
                 onRecordingToggle = {},
                 onSttEngineChange = {},
+                onNativeSpeechLanguageChange = {},
                 onWhisperModelChange = {},
                 onVadStartDelayChange = {},
                 onVadStopDelayChange = {},

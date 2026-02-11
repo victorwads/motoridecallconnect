@@ -92,8 +92,11 @@
     <string name="stt_engine_hint">Choose the transcription backend used during trip recording.</string>
     <string name="stt_engine_whisper">Whisper (local model)</string>
     <string name="stt_engine_native">Android native recognition</string>
+    <string name="native_language_header">Native Recognition Language</string>
+    <string name="native_language_hint">Used only with Android native recognition. The app sends this language to improve accuracy.</string>
     <string name="whisper_model_header">Whisper Model</string>
     <string name="whisper_model_hint">Choose quality and quantization. Bigger models need more storage and RAM.</string>
+    <string name="whisper_language_auto_hint">Whisper language is automatic (multilingual auto-detection).</string>
     <string name="transcript_partial_prefix">Partial: </string>
     <string name="transcription_status_idle">Transcription status: idle</string>
     <string name="transcription_status_processing">Transcription status: processing %1$d (queue %2$d)</string>

@@ -26,6 +26,7 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
+import dev.wads.motoridecallconnect.stt.NativeSpeechLanguageCatalog
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
@@ -122,6 +123,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isAudioCaptureRunning = false
     private var isHostingEnabled = false
     private var sttEngine = SttEngine.WHISPER
+    private var nativeSpeechLanguageTag = NativeSpeechLanguageCatalog.defaultOption.tag
     private var whisperModelId = WhisperModelCatalog.defaultOption.id
     private var isRtcConnected = false
     private var controlDataChannel: DataChannel? = null
@@ -365,6 +367,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         startCmd: String,
         stopCmd: String,
         sttEngine: SttEngine,
+        nativeLanguageTag: String,
         modelId: String,
         vadStartDelaySeconds: Float? = null,
         vadStopDelaySeconds: Float? = null,
@@ -379,6 +382,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val previousTripPath = currentTripPath
         val resolvedModelId = WhisperModelCatalog.findById(modelId)?.id
             ?: WhisperModelCatalog.defaultOption.id
+        val resolvedNativeLanguageTag = NativeSpeechLanguageCatalog.normalizeTag(nativeLanguageTag)
         val normalizedTripId = when {
             !tripActive -> null
             !tripId.isNullOrBlank() -> tripId
@@ -401,6 +405,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 currentTripPath != normalizedTripPath
         val wasTripActive = isTripActive
         val engineChanged = this.sttEngine != sttEngine
+        val nativeLanguageChanged = this.nativeSpeechLanguageTag != resolvedNativeLanguageTag
         val modelChanged = whisperModelId != resolvedModelId
         val modeChanged = currentMode != mode
         currentMode = mode
@@ -413,6 +418,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             vadStopDelayMs = normalizeVadDelayMs(vadStopDelaySeconds)
         }
         this.sttEngine = sttEngine
+        nativeSpeechLanguageTag = resolvedNativeLanguageTag
         whisperModelId = resolvedModelId
         isTripActive = tripActive
         currentTripId = normalizedTripId
@@ -432,6 +438,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             flushTranscriptionBuffer(force = true, reason = "stt_engine_change")
             resetTranscriptionState(clearAudio = true)
             speechRecognizerHelper?.setEngine(sttEngine)
+        }
+        if (nativeLanguageChanged) {
+            speechRecognizerHelper?.setNativeLanguageTag(nativeSpeechLanguageTag)
         }
 
         if (tripChanged && wasTripActive && !tripActive) {
@@ -455,6 +464,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 if (engineChanged) {
                     recognizer.setEngine(sttEngine)
                 }
+                if (nativeLanguageChanged) {
+                    recognizer.setNativeLanguageTag(nativeSpeechLanguageTag)
+                }
                 if (modelChanged) {
                     recognizer.setWhisperModel(whisperModelId)
                 }
@@ -471,6 +483,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 val recognizer = getOrCreateSpeechRecognizerHelper()
                 if (engineChanged) {
                     recognizer.setEngine(sttEngine)
+                }
+                if (nativeLanguageChanged) {
+                    recognizer.setNativeLanguageTag(nativeSpeechLanguageTag)
                 }
                 recognizer.setWhisperModel(whisperModelId)
                 if (sttEngine == SttEngine.WHISPER) {
@@ -509,11 +524,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (engineChanged) {
             Log.i(TAG, "STT engine changed locally. engine=$sttEngine")
         }
+        if (nativeLanguageChanged) {
+            Log.i(TAG, "Native STT language changed locally. languageTag=$nativeSpeechLanguageTag")
+        }
         Log.d(
             TAG,
             "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, " +
                 "VadStartDelayMs=$vadStartDelayMs, VadStopDelayMs=$vadStopDelayMs, " +
-                "SttEngine=$sttEngine, WhisperModel=$whisperModelId, TripActive=$tripActive"
+                "SttEngine=$sttEngine, NativeLanguage=$nativeSpeechLanguageTag, " +
+                "WhisperModel=$whisperModelId, TripActive=$tripActive"
         )
 
         if (!isTripActive) {
@@ -1742,6 +1761,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             startCmd = startCommand,
             stopCmd = stopCommand,
             sttEngine = sttEngine,
+            nativeLanguageTag = nativeSpeechLanguageTag,
             modelId = whisperModelId,
             tripActive = active,
             tripId = normalizedTripId,
@@ -1820,7 +1840,13 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (current != null) {
             return current
         }
-        return SpeechRecognizerHelper(this, this, whisperModelId, sttEngine).also { created ->
+        return SpeechRecognizerHelper(
+            context = this,
+            listener = this,
+            initialModelId = whisperModelId,
+            initialEngine = sttEngine,
+            initialNativeLanguageTag = nativeSpeechLanguageTag
+        ).also { created ->
             speechRecognizerHelper = created
         }
     }
