@@ -134,6 +134,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     socialViewModel = socialViewModel,
                     pairingViewModel = pairingViewModel,
                     settingsViewModel = settingsViewModel,
+                    onStartTripClick = {
+                        activeTripViewModel.startTrip()
+                    },
                     onEndTripClick = { 
                         activeTripViewModel.endTrip()
                     },

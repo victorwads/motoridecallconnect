@@ -46,6 +46,7 @@ import dev.wads.motoridecallconnect.ui.components.UserProfileView
 fun ActiveTripScreen(
     uiState: ActiveTripUiState,
     isHost: Boolean,
+    onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onDisconnectClick: () -> Unit = {}
 ) {
@@ -177,10 +178,13 @@ fun ActiveTripScreen(
                     )
                 }
             } else {
-                Text(
-                    text = "Trip inativa. O início da trip não é feito por este botão.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                BigButton(
+                    text = stringResource(R.string.start_trip_action),
+                    onClick = onStartTripClick,
+                    variant = ButtonVariant.Primary,
+                    icon = Icons.Default.PlayArrow,
+                    size = ButtonSize.Xl,
+                    fullWidth = true
                 )
             }
         }
@@ -223,6 +227,7 @@ private fun ActiveTripScreenPreview() {
                     transcript = listOf("Olá", "Tudo bem?", "Na escuta.")
                 ),
                 isHost = true,
+                onStartTripClick = {},
                 onEndTripClick = {}
             )
         }

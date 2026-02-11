@@ -56,6 +56,7 @@ fun AppNavigation(
     socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
     pairingViewModel: PairingViewModel,
     settingsViewModel: SettingsViewModel,
+    onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onConnectToDevice: (Device) -> Unit,
     onDisconnectClick: () -> Unit = {}
@@ -151,6 +152,7 @@ fun AppNavigation(
                 ActiveTripScreen(
                     uiState = uiState,
                     isHost = isHosting,
+                    onStartTripClick = onStartTripClick,
                     onEndTripClick = onEndTripClick,
                     onDisconnectClick = onDisconnectClick
                 )
@@ -161,6 +163,9 @@ fun AppNavigation(
                     uiState = uiState,
                     onTripClick = { tripId ->
                         navController.navigate(Screen.TripDetails.createRoute(tripId))
+                    },
+                    onDeleteTrip = { tripId ->
+                        tripHistoryViewModel.deleteTrip(tripId)
                     }
                 )
             }
