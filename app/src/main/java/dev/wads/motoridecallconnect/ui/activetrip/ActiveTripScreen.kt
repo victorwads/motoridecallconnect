@@ -18,15 +18,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -34,7 +42,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import coil.compose.AsyncImage
+import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
+import dev.wads.motoridecallconnect.data.repository.UserRepository
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
@@ -209,6 +221,7 @@ private fun BluetoothAudioRouteCard(uiState: ActiveTripUiState) {
 
 @Composable
 private fun TransmissionStatusCard(uiState: ActiveTripUiState) {
+    val localUser = FirebaseAuth.getInstance().currentUser
     val peerName = uiState.connectedPeer?.name?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.trip_peer_default_name)
 
@@ -231,12 +244,15 @@ private fun TransmissionStatusCard(uiState: ActiveTripUiState) {
         ) {
             ParticipantTransmissionTile(
                 modifier = Modifier.weight(1f),
+                userId = localUser?.uid,
+                photoUrlOverride = localUser?.photoUrl?.toString(),
                 name = stringResource(R.string.transmission_you_label),
                 statusText = localStatusText,
                 isActive = uiState.isLocalTransmitting
             )
             ParticipantTransmissionTile(
                 modifier = Modifier.weight(1f),
+                userId = uiState.connectedPeer?.id,
                 name = peerName,
                 statusText = remoteStatusText,
                 isActive = isConnected && uiState.isRemoteTransmitting
@@ -248,6 +264,8 @@ private fun TransmissionStatusCard(uiState: ActiveTripUiState) {
 @Composable
 private fun ParticipantTransmissionTile(
     modifier: Modifier = Modifier,
+    userId: String?,
+    photoUrlOverride: String? = null,
     name: String,
     statusText: String,
     isActive: Boolean
@@ -255,6 +273,20 @@ private fun ParticipantTransmissionTile(
     val borderColor = if (isActive) Color(0xFF22C55E) else MaterialTheme.colorScheme.outline
     val fillColor = if (isActive) Color(0xFF22C55E).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant
     val circleSize: Dp = 54.dp
+    val placeholderPainter = rememberVectorPainter(Icons.Default.Person)
+    var resolvedPhotoUrl by remember(userId, photoUrlOverride) { mutableStateOf(photoUrlOverride) }
+
+    LaunchedEffect(userId, photoUrlOverride) {
+        if (!photoUrlOverride.isNullOrBlank()) {
+            resolvedPhotoUrl = photoUrlOverride
+            return@LaunchedEffect
+        }
+        resolvedPhotoUrl = if (userId.isNullOrBlank()) {
+            null
+        } else {
+            runCatching { UserRepository.getInstance().getUserProfile(userId)?.photoUrl }.getOrNull()
+        }
+    }
 
     Column(
         modifier = modifier,
@@ -268,11 +300,24 @@ private fun ParticipantTransmissionTile(
                 .background(fillColor, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = name.trim().take(1).uppercase(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+            if (!resolvedPhotoUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = resolvedPhotoUrl,
+                    contentDescription = name,
+                    modifier = Modifier
+                        .size(circleSize - 8.dp)
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Crop,
+                    placeholder = placeholderPainter,
+                    error = placeholderPainter
+                )
+            } else {
+                Text(
+                    text = name.trim().take(1).uppercase(),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         Text(
             text = name,
