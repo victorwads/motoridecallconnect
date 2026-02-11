@@ -27,12 +27,22 @@ import dev.wads.motoridecallconnect.vad.SimpleVad
 import kotlinx.coroutines.launch
 import org.webrtc.*
 import java.net.InetAddress
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
 
     companion object {
         private const val TAG = "AudioService"
         private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
+        private const val AUDIO_SAMPLE_RATE_HZ = 48_000
+        private const val AUDIO_BYTES_PER_SAMPLE = 2
+
+        // Tuning knobs for chunk-based transcription behavior.
+        private const val TRANSCRIPTION_MIN_CONTEXT_MS = 3_000L
+        private const val TRANSCRIPTION_SILENCE_FLUSH_MS = 5_000L
+        private const val TRANSCRIPTION_MAX_CHUNK_MS = 45_000L
     }
 
     private val binder = LocalBinder()
@@ -45,6 +55,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private lateinit var webRtcClient: WebRtcClient
     private var audioFocusRequest: AudioFocusRequest? = null
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
+    private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private var callback: ServiceCallback? = null
 
@@ -60,6 +71,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var lastTransmissionTime = 0L
     private var totalFramesReceived = 0L
     private var totalChunksDispatched = 0L
+    private var bufferedAudioDurationMs = 0L
+    private var consecutiveSilenceDurationMs = 0L
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -138,6 +151,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         super.onDestroy()
         releaseAudioDucking()
         audioCapturer.stopCapture()
+        flushTranscriptionBuffer(force = true, reason = "service_destroy")
+        transcriptionExecutor.shutdown()
+        if (!transcriptionExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+            transcriptionExecutor.shutdownNow()
+        }
         speechRecognizerHelper.destroy()
         signalingClient.close()
     }
@@ -171,10 +189,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean, tripId: String? = null) {
         val tripChanged = isTripActive != tripActive
+        val wasTripActive = isTripActive
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
         isTripActive = tripActive
+
+        if (tripChanged && wasTripActive && !tripActive) {
+            flushTranscriptionBuffer(force = true, reason = "trip_end")
+        }
+        if (tripChanged && tripActive) {
+            resetTranscriptionState(clearAudio = true)
+        }
 
         if (tripChanged) {
             val msg = if (isTripActive) "TRIP:START${if (tripId != null) ":$tripId" else ""}" else "TRIP:STOP"
@@ -280,20 +306,22 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         totalFramesReceived++
         val currentData = data.sliceArray(0 until size)
         val now = System.currentTimeMillis()
+        val isSpeechDetected = vad.isSpeech(currentData)
 
         if (now - lastTransmissionTime >= PIPELINE_LOG_INTERVAL_MS) {
             lastTransmissionTime = now
             Log.d(
                 TAG,
                 "Audio pipeline heartbeat: frames=$totalFramesReceived, " +
-                    "bufferedBytes=${audioBuffer.size}, tripActive=$isTripActive, " +
+                    "bufferedBytes=${audioBuffer.size}, bufferedMs=$bufferedAudioDurationMs, " +
+                    "silenceMs=$consecutiveSilenceDurationMs, tripActive=$isTripActive, " +
                     "mode=$currentMode, whisper=${speechRecognizerHelper.isUsingWhisper}, transmitting=$isTransmitting"
             )
         }
         
         // 1. Handle Intercom Transmission (VAD Logic)
         if (currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
-            if (vad.isSpeech(currentData)) {
+            if (isSpeechDetected) {
                 if (!isTransmitting) {
                     isTransmitting = true
                     requestAudioDucking()
@@ -309,28 +337,29 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
 
         // 2. Handle Transcription Recording
-        // We accumulate audio if trip is active, prioritizing Whisper if available
+        // We accumulate audio if trip is active and flush after sustained silence.
         if (isTripActive) {
             audioBuffer.addAll(currentData.toList())
-            
-            // To avoid huge buffers, we process chunks
-            // VAD and VOICE_COMMAND trigger on silence, CONTINUOUS triggers on time
-            val isSilence = !vad.isSpeech(currentData)
-            val shouldProcess = when (currentMode) {
-                OperatingMode.CONTINUOUS_TRANSMISSION -> audioBuffer.size > 16000 * 2 * 4 // 4s
-                else -> isSilence && audioBuffer.size > 16000 * 2 * 1 // 1s min
+
+            val frameDurationMs = bytesToDurationMs(size)
+            bufferedAudioDurationMs += frameDurationMs
+
+            if (isSpeechDetected) {
+                consecutiveSilenceDurationMs = 0L
+            } else {
+                consecutiveSilenceDurationMs += frameDurationMs
             }
 
-            if (shouldProcess && audioBuffer.isNotEmpty()) {
-                totalChunksDispatched++
-                Log.d(
-                    TAG,
-                    "Dispatching chunk #$totalChunksDispatched to STT. bytes=${audioBuffer.size}, " +
-                        "isSilence=$isSilence, mode=$currentMode, whisper=${speechRecognizerHelper.isUsingWhisper}"
-                )
-                speechRecognizerHelper.processAudio(audioBuffer.toByteArray())
-                audioBuffer.clear()
+            val hasMinimumContext = bufferedAudioDurationMs >= TRANSCRIPTION_MIN_CONTEXT_MS
+            val silenceFlushReached = consecutiveSilenceDurationMs >= TRANSCRIPTION_SILENCE_FLUSH_MS
+            val maxChunkReached = bufferedAudioDurationMs >= TRANSCRIPTION_MAX_CHUNK_MS
+
+            if (hasMinimumContext && (silenceFlushReached || maxChunkReached)) {
+                val reason = if (maxChunkReached) "max_chunk_timeout" else "silence_timeout"
+                flushTranscriptionBuffer(force = false, reason = reason)
             }
+        } else if (audioBuffer.isNotEmpty()) {
+            resetTranscriptionState(clearAudio = true)
         }
     }
 
@@ -427,5 +456,52 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             .setContentText("Intercomunicador ativo.")
             .setSmallIcon(R.drawable.ic_notification)
             .build()
+    }
+
+    private fun bytesToDurationMs(byteCount: Int): Long {
+        if (byteCount <= 0) return 0L
+        val sampleCount = byteCount / AUDIO_BYTES_PER_SAMPLE
+        return (sampleCount * 1000L) / AUDIO_SAMPLE_RATE_HZ
+    }
+
+    private fun flushTranscriptionBuffer(force: Boolean, reason: String) {
+        if (audioBuffer.isEmpty()) {
+            resetTranscriptionState(clearAudio = false)
+            return
+        }
+
+        if (!force && bufferedAudioDurationMs < TRANSCRIPTION_MIN_CONTEXT_MS) {
+            return
+        }
+
+        val chunk = audioBuffer.toByteArray()
+        val chunkDurationMs = bufferedAudioDurationMs
+        val silenceMs = consecutiveSilenceDurationMs
+        resetTranscriptionState(clearAudio = true)
+
+        totalChunksDispatched++
+        val chunkId = totalChunksDispatched
+
+        Log.i(
+            TAG,
+            "Dispatching chunk #$chunkId to STT. bytes=${chunk.size}, durationMs=$chunkDurationMs, " +
+                "silenceMs=$silenceMs, reason=$reason, whisper=${speechRecognizerHelper.isUsingWhisper}"
+        )
+
+        transcriptionExecutor.execute {
+            try {
+                speechRecognizerHelper.processAudio(chunk)
+            } catch (t: Throwable) {
+                Log.e(TAG, "STT chunk #$chunkId failed", t)
+            }
+        }
+    }
+
+    private fun resetTranscriptionState(clearAudio: Boolean) {
+        if (clearAudio) {
+            audioBuffer.clear()
+        }
+        bufferedAudioDurationMs = 0L
+        consecutiveSilenceDurationMs = 0L
     }
 }
