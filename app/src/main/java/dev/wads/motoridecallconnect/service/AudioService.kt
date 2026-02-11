@@ -427,12 +427,20 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         if (!isTripActive) {
             setTransmitting(false, reason = "trip_inactive")
-        } else if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION) {
-            setTransmitting(true, reason = "continuous_mode")
-        } else if (tripChanged && tripActive) {
-            setTransmitting(true, reason = "trip_start")
-        } else if (modeChanged) {
-            setTransmitting(false, reason = "mode_reset")
+        } else {
+            when (currentMode) {
+                OperatingMode.CONTINUOUS_TRANSMISSION -> {
+                    setTransmitting(true, reason = "continuous_mode")
+                }
+                OperatingMode.VOICE_ACTIVITY_DETECTION,
+                OperatingMode.VOICE_COMMAND -> {
+                    if (tripChanged && tripActive) {
+                        setTransmitting(false, reason = "trip_start_wait_for_trigger")
+                    } else if (modeChanged) {
+                        setTransmitting(false, reason = "mode_requires_trigger")
+                    }
+                }
+            }
         }
         syncOutgoingAudioState(reason = "configuration_update")
         updateCommunicationAudioProfile(reason = "configuration_update")
@@ -696,9 +704,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (!isTripActive) {
             return
         }
-        if (command.contains(startCommand, ignoreCase = true) && !isTransmitting) {
+        val startKeyword = startCommand.trim()
+        val stopKeyword = stopCommand.trim()
+        if (startKeyword.isNotEmpty() && command.contains(startKeyword, ignoreCase = true) && !isTransmitting) {
             setTransmitting(true, reason = "voice_command_start")
-        } else if (command.contains(stopCommand, ignoreCase = true) && isTransmitting) {
+        } else if (stopKeyword.isNotEmpty() && command.contains(stopKeyword, ignoreCase = true) && isTransmitting) {
             setTransmitting(false, reason = "voice_command_stop")
         }
     }
