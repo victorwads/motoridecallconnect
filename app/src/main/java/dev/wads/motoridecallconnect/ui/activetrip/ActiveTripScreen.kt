@@ -1,5 +1,6 @@
 package dev.wads.motoridecallconnect.ui.activetrip
 
+import android.text.format.DateFormat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -164,12 +167,38 @@ fun ActiveTripScreen(
         }
 
         // --- Transcription List ---
-        if (uiState.isTripActive || uiState.transcript.isNotEmpty()) {
+        if (uiState.isTripActive || uiState.transcript.isNotEmpty() || uiState.transcriptQueue.isNotEmpty()) {
             StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (uiState.transcript.isEmpty()) {
+                    val queueStatusText = when {
+                        uiState.transcriptQueueProcessingCount > 0 ->
+                            stringResource(
+                                R.string.transcription_status_processing,
+                                uiState.transcriptQueueProcessingCount,
+                                uiState.transcriptQueuePendingCount
+                            )
+                        uiState.transcriptQueuePendingCount > 0 ->
+                            stringResource(R.string.transcription_status_pending, uiState.transcriptQueuePendingCount)
+                        uiState.transcriptQueueFailedCount > 0 ->
+                            stringResource(R.string.transcription_status_failed, uiState.transcriptQueueFailedCount)
+                        else -> stringResource(R.string.transcription_status_idle)
+                    }
+
+                    Text(
+                        text = queueStatusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (uiState.transcriptQueue.isNotEmpty()) {
+                        uiState.transcriptQueue.takeLast(10).forEach { queueItem ->
+                            TranscriptionQueueLine(item = queueItem)
+                        }
+                    }
+
+                    if (uiState.transcript.isEmpty() && uiState.transcriptQueue.isEmpty()) {
                         Text(
-                            text = "Aguardando falas...",
+                            text = stringResource(R.string.transcription_waiting_speech),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -186,6 +215,70 @@ fun ActiveTripScreen(
         }
         
         Spacer(modifier = Modifier.height(30.dp))
+    }
+}
+
+@Composable
+private fun TranscriptionQueueLine(item: TranscriptQueueItemUi) {
+    val timeLabel = remember(item.timestampMs) {
+        DateFormat.format("HH:mm:ss", item.timestampMs).toString()
+    }
+    val statusLabel = when (item.status) {
+        TranscriptQueueItemStatus.PENDING -> stringResource(R.string.transcription_item_pending)
+        TranscriptQueueItemStatus.PROCESSING -> stringResource(R.string.transcription_item_processing)
+        TranscriptQueueItemStatus.FAILED -> stringResource(R.string.transcription_item_failed)
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = timeLabel,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            when (item.status) {
+                TranscriptQueueItemStatus.PROCESSING -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
+                }
+                TranscriptQueueItemStatus.FAILED -> {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                TranscriptQueueItemStatus.PENDING -> Unit
+            }
+            Text(
+                text = statusLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = when (item.status) {
+                    TranscriptQueueItemStatus.FAILED -> MaterialTheme.colorScheme.error
+                    TranscriptQueueItemStatus.PROCESSING -> MaterialTheme.colorScheme.primary
+                    TranscriptQueueItemStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+    }
+
+    if (item.status == TranscriptQueueItemStatus.FAILED && !item.failureReason.isNullOrBlank()) {
+        Text(
+            text = item.failureReason,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            maxLines = 1
+        )
     }
 }
 

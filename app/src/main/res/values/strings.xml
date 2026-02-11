@@ -95,6 +95,14 @@
     <string name="whisper_model_header">Whisper Model</string>
     <string name="whisper_model_hint">Choose quality and quantization. Bigger models need more storage and RAM.</string>
     <string name="transcript_partial_prefix">Partial: </string>
+    <string name="transcription_status_idle">Transcription status: idle</string>
+    <string name="transcription_status_processing">Transcription status: processing %1$d (queue %2$d)</string>
+    <string name="transcription_status_pending">Transcription status: %1$d pending in queue</string>
+    <string name="transcription_status_failed">Transcription status: %1$d failed item(s)</string>
+    <string name="transcription_item_pending">Queued...</string>
+    <string name="transcription_item_processing">Processing...</string>
+    <string name="transcription_item_failed">Failed</string>
+    <string name="transcription_waiting_speech">Waiting for speech...</string>
     
     <string name="status_connected">Connected</string>
     <string name="status_connecting">Connecting</string>

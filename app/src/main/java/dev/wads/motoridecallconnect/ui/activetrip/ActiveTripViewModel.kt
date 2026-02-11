@@ -8,6 +8,8 @@ import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import dev.wads.motoridecallconnect.data.model.TranscriptLine
 import dev.wads.motoridecallconnect.data.repository.TripRepository
+import dev.wads.motoridecallconnect.stt.queue.TranscriptionChunkStatus
+import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +35,19 @@ enum class ConnectionStatus {
     ERROR
 }
 
+enum class TranscriptQueueItemStatus {
+    PENDING,
+    PROCESSING,
+    FAILED
+}
+
+data class TranscriptQueueItemUi(
+    val id: String,
+    val timestampMs: Long,
+    val status: TranscriptQueueItemStatus,
+    val failureReason: String? = null
+)
+
 data class ActiveTripUiState(
     val discoveredServices: List<NsdServiceInfo> = emptyList(),
     val isTripActive: Boolean = false,
@@ -47,6 +62,10 @@ data class ActiveTripUiState(
     val audioRouteLabel: String = "Bluetooth headset unavailable",
     val isBluetoothAudioActive: Boolean = false,
     val transcript: List<String> = emptyList(),
+    val transcriptQueue: List<TranscriptQueueItemUi> = emptyList(),
+    val transcriptQueuePendingCount: Int = 0,
+    val transcriptQueueProcessingCount: Int = 0,
+    val transcriptQueueFailedCount: Int = 0,
     val isModelDownloading: Boolean = false,
     val modelDownloadProgress: Int = 0
 )
@@ -246,29 +265,68 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         Log.i(TAG, "Applied remote trip stop.")
     }
 
-    fun updateTranscript(newTranscript: String, isFinal: Boolean) {
+    fun onTranscriptionQueueUpdated(snapshot: TranscriptionQueueSnapshot) {
+        _uiState.update { state ->
+            val visibleItems = if (state.currentTripId.isNullOrBlank()) {
+                snapshot.items
+            } else {
+                snapshot.items.filter { queued -> queued.tripId == state.currentTripId }
+            }
+            val pendingCount = visibleItems.count { it.status == TranscriptionChunkStatus.PENDING }
+            val processingCount = visibleItems.count { it.status == TranscriptionChunkStatus.PROCESSING }
+            val failedCount = visibleItems.count { it.status == TranscriptionChunkStatus.FAILED }
+            state.copy(
+                transcriptQueue = visibleItems.map { queued ->
+                    TranscriptQueueItemUi(
+                        id = queued.id,
+                        timestampMs = queued.createdAtMs,
+                        status = mapQueueStatus(queued.status),
+                        failureReason = queued.failureReason
+                    )
+                },
+                transcriptQueuePendingCount = pendingCount,
+                transcriptQueueProcessingCount = processingCount,
+                transcriptQueueFailedCount = failedCount
+            )
+        }
+    }
+
+    fun updateTranscript(
+        newTranscript: String,
+        isFinal: Boolean,
+        targetTripId: String? = null,
+        targetHostUid: String? = null,
+        targetTripPath: String? = null,
+        transcriptTimestampMs: Long? = null
+    ) {
         val state = _uiState.value
-        val targetUid = state.hostUid
+        val resolvedTripId = targetTripId ?: state.currentTripId
+        val resolvedHostUid = targetHostUid
+            ?: parseTripPath(targetTripPath).first
+            ?: state.hostUid
             ?: parseTripPath(state.tripPath).first
             ?: FirebaseAuth.getInstance().currentUser?.uid
+        val resolvedTimestamp = transcriptTimestampMs ?: System.currentTimeMillis()
+        val shouldRenderOnCurrentTrip = resolvedTripId != null && resolvedTripId == state.currentTripId
         Log.d(
             TAG,
             "updateTranscript(isFinal=$isFinal, tripActive=${state.isTripActive}, " +
-                "tripId=${state.currentTripId}, textLen=${newTranscript.length})"
+                "tripId=${state.currentTripId}, targetTripId=$resolvedTripId, textLen=${newTranscript.length})"
         )
 
         if (isFinal) {
-            val tripId = state.currentTripId ?: return
+            val tripId = resolvedTripId ?: return
 
-            // Show immediately in UI; Firestore listener will later reconcile authoritative lines.
-            _uiState.update { s ->
-                val updated = s.transcript.toMutableList()
-                if (updated.isNotEmpty() && updated.last().startsWith("Parcial:")) {
-                    updated.removeAt(updated.lastIndex)
+            if (shouldRenderOnCurrentTrip) {
+                // Show immediately in UI; Firestore listener will later reconcile authoritative lines.
+                _uiState.update { s ->
+                    val updated = s.transcript.toMutableList()
+                    if (updated.isNotEmpty() && updated.last().startsWith("Parcial:")) {
+                        updated.removeAt(updated.lastIndex)
+                    }
+                    updated.add("${formatTranscriptTime(resolvedTimestamp)} - Você: $newTranscript")
+                    s.copy(transcript = updated)
                 }
-                val now = System.currentTimeMillis()
-                updated.add("${formatTranscriptTime(now)} - Você: $newTranscript")
-                s.copy(transcript = updated)
             }
 
             if (true) { // TODO: Re-wire this to the settings view model
@@ -278,9 +336,10 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                             TranscriptLine(
                                 tripId = tripId,
                                 text = newTranscript,
+                                timestamp = resolvedTimestamp,
                                 isPartial = false
                             ),
-                            targetHostUid = targetUid
+                            targetHostUid = resolvedHostUid
                         )
                     } catch (t: Throwable) {
                         Log.e(TAG, "Failed to persist transcript line for tripId=$tripId", t)
@@ -288,6 +347,9 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                 }
             }
         } else {
+            if (!shouldRenderOnCurrentTrip) {
+                return
+            }
             // Partial results stay local-only for smoothness
             _uiState.update { s ->
                 val currentTranscript = s.transcript.toMutableList()
@@ -303,6 +365,14 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
     fun updateModelDownloadStatus(isDownloading: Boolean, progress: Int) {
         _uiState.update { it.copy(isModelDownloading = isDownloading, modelDownloadProgress = progress) }
+    }
+
+    private fun mapQueueStatus(status: TranscriptionChunkStatus): TranscriptQueueItemStatus {
+        return when (status) {
+            TranscriptionChunkStatus.PENDING -> TranscriptQueueItemStatus.PENDING
+            TranscriptionChunkStatus.PROCESSING -> TranscriptQueueItemStatus.PROCESSING
+            TranscriptionChunkStatus.FAILED -> TranscriptQueueItemStatus.FAILED
+        }
     }
 
     private fun formatTranscriptTime(timestamp: Long): String {

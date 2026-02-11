@@ -62,6 +62,11 @@ class SpeechRecognizerHelper(
     private var legacyNativeRecognizer: SpeechRecognizer? = null
     private var isLegacyNativeSessionRunning = false
 
+    data class ChunkTranscriptionResult(
+        val text: String? = null,
+        val error: String? = null
+    )
+
     interface SpeechRecognitionListener {
         fun onPartialResults(results: String)
         fun onFinalResults(results: String)
@@ -271,30 +276,60 @@ class SpeechRecognizerHelper(
     }
 
     fun processAudio(data: ByteArray) {
-        if (!isListening) {
-            Log.v(TAG, "Ignoring audio chunk because helper is not listening.")
+        val result = transcribeChunkInternal(data, allowLegacyNativeFallback = true)
+        if (!result.error.isNullOrBlank()) {
+            listener.onError(result.error)
             return
+        }
+        val text = result.text.orEmpty().trim()
+        if (text.isNotBlank()) {
+            listener.onFinalResults(text)
+        }
+    }
+
+    fun transcribeChunk(data: ByteArray): ChunkTranscriptionResult {
+        return transcribeChunkInternal(data, allowLegacyNativeFallback = false)
+    }
+
+    private fun transcribeChunkInternal(
+        data: ByteArray,
+        allowLegacyNativeFallback: Boolean
+    ): ChunkTranscriptionResult {
+        if (!isListening) {
+            return ChunkTranscriptionResult(error = "Speech recognizer helper is not listening.")
         }
 
         if (data.size < 2) {
-            Log.w(TAG, "Ignoring tiny audio chunk. bytes=${data.size}")
-            return
+            return ChunkTranscriptionResult(error = "Tiny audio chunk (bytes=${data.size}).")
+        }
+
+        if (selectedEngine == SttEngine.WHISPER && !isUsingWhisper) {
+            if (!checkAndInitWhisper()) {
+                Log.w(
+                    TAG,
+                    "Whisper unavailable for model=${selectedModel.id}. Falling back to native chunk STT."
+                )
+            }
         }
 
         val shouldUseWhisper = selectedEngine == SttEngine.WHISPER && isUsingWhisper
         if (shouldUseWhisper) {
-            processWhisperChunk(data)
-            return
+            return processWhisperChunk(data)
         }
 
         if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            if (!isLegacyNativeSessionRunning) {
-                startLegacyNativeRecognizer()
+            if (allowLegacyNativeFallback) {
+                if (!isLegacyNativeSessionRunning) {
+                    startLegacyNativeRecognizer()
+                }
+                return ChunkTranscriptionResult()
             }
-            return
+            return ChunkTranscriptionResult(
+                error = "Native chunk STT requires Android 13+ for injected PCM audio source."
+            )
         }
 
-        processNativeChunk(data)
+        return processNativeChunk(data)
     }
 
     private fun startLegacyNativeRecognizer() {
@@ -420,7 +455,7 @@ class SpeechRecognizerHelper(
         }
     }
 
-    private fun processWhisperChunk(data: ByteArray) {
+    private fun processWhisperChunk(data: ByteArray): ChunkTranscriptionResult {
         val sampleCount48k = data.size / 2
         val pcm48k = FloatArray(sampleCount48k)
         var peak = 0f
@@ -441,7 +476,7 @@ class SpeechRecognizerHelper(
                 "Skipping tiny Whisper chunk. bytes=${data.size}, samples16k=${pcm16k.size}, " +
                     "required=$MIN_WHISPER_SAMPLES"
             )
-            return
+            return ChunkTranscriptionResult()
         }
 
         whisperChunkCount++
@@ -457,7 +492,7 @@ class SpeechRecognizerHelper(
 
         if (result == null) {
             Log.d(TAG, "Skipping Whisper chunk because context is unavailable.")
-            return
+            return ChunkTranscriptionResult(error = "Whisper context unavailable.")
         }
 
         if (result.startsWith("Error:", ignoreCase = true)) {
@@ -466,8 +501,7 @@ class SpeechRecognizerHelper(
                 "Whisper chunk #$whisperChunkCount failed. " +
                     "samples16k=${pcm16k.size}, elapsedMs=$elapsedMs, error=$result"
             )
-            listener.onError(result)
-            return
+            return ChunkTranscriptionResult(error = result)
         }
 
         if (result.isBlank()) {
@@ -478,7 +512,7 @@ class SpeechRecognizerHelper(
                     "bytes=${data.size}, samples48k=$sampleCount48k, samples16k=${pcm16k.size}, " +
                     "peak=${"%.3f".format(peak)}, elapsedMs=$elapsedMs, emptyCount=$emptyWhisperResultCount"
             )
-            return
+            return ChunkTranscriptionResult()
         }
 
         Log.i(
@@ -487,10 +521,10 @@ class SpeechRecognizerHelper(
                 "samples16k=${pcm16k.size}, peak=${"%.3f".format(peak)}, elapsedMs=$elapsedMs, " +
                 "preview=${result.take(120)}"
         )
-        listener.onFinalResults(result)
+        return ChunkTranscriptionResult(text = result)
     }
 
-    private fun processNativeChunk(data: ByteArray) {
+    private fun processNativeChunk(data: ByteArray): ChunkTranscriptionResult {
         val sampleCount = data.size / 2
         if (sampleCount < MIN_SYSTEM_SAMPLES) {
             Log.d(
@@ -498,7 +532,7 @@ class SpeechRecognizerHelper(
                 "Skipping tiny native chunk. bytes=${data.size}, samples48k=$sampleCount, " +
                     "required=$MIN_SYSTEM_SAMPLES"
             )
-            return
+            return ChunkTranscriptionResult()
         }
 
         systemChunkCount++
@@ -509,21 +543,20 @@ class SpeechRecognizerHelper(
 
         if (result.error != null) {
             Log.e(TAG, "Native STT chunk #$chunkId failed in ${elapsedMs}ms: ${result.error}")
-            listener.onError(result.error)
-            return
+            return ChunkTranscriptionResult(error = result.error)
         }
 
         val text = result.text.orEmpty().trim()
         if (text.isBlank()) {
             Log.d(TAG, "Native STT chunk #$chunkId produced empty text. elapsedMs=$elapsedMs")
-            return
+            return ChunkTranscriptionResult()
         }
 
         Log.i(
             TAG,
             "Native STT chunk #$chunkId textLen=${text.length}, elapsedMs=$elapsedMs, preview=${text.take(120)}"
         )
-        listener.onFinalResults(text)
+        return ChunkTranscriptionResult(text = text)
     }
 
     private fun transcribeNativeChunk(data: ByteArray): ChunkTranscriptionResult {
@@ -734,8 +767,4 @@ class SpeechRecognizerHelper(
         Log.i(TAG, "SpeechRecognizerHelper destroyed.")
     }
 
-    private data class ChunkTranscriptionResult(
-        val text: String? = null,
-        val error: String? = null
-    )
 }

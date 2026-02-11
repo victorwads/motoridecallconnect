@@ -23,6 +23,7 @@ import dev.wads.motoridecallconnect.data.local.AppDatabase
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.service.AudioService
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
 import dev.wads.motoridecallconnect.ui.common.ViewModelFactory
 import dev.wads.motoridecallconnect.ui.navigation.AppNavigation
 import dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme
@@ -281,9 +282,23 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         audioService = null
     }
 
-    override fun onTranscriptUpdate(transcript: String, isFinal: Boolean) {
+    override fun onTranscriptUpdate(
+        transcript: String,
+        isFinal: Boolean,
+        tripId: String?,
+        hostUid: String?,
+        tripPath: String?,
+        timestampMs: Long?
+    ) {
         runOnUiThread {
-            activeTripViewModel.updateTranscript(transcript, isFinal)
+            activeTripViewModel.updateTranscript(
+                newTranscript = transcript,
+                isFinal = isFinal,
+                targetTripId = tripId,
+                targetHostUid = hostUid,
+                targetTripPath = tripPath,
+                transcriptTimestampMs = timestampMs
+            )
         }
     }
 
@@ -303,6 +318,12 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     override fun onTripStatusChanged(isActive: Boolean, tripId: String?, hostUid: String?, tripPath: String?) {
         runOnUiThread {
             activeTripViewModel.onTripStatusChanged(isActive, tripId, hostUid, tripPath)
+        }
+    }
+
+    override fun onTranscriptionQueueUpdated(snapshot: TranscriptionQueueSnapshot) {
+        runOnUiThread {
+            activeTripViewModel.onTranscriptionQueueUpdated(snapshot)
         }
     }
 

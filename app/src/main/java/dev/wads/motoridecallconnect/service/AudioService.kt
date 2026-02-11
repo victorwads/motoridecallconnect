@@ -29,6 +29,9 @@ import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
 import dev.wads.motoridecallconnect.stt.SttEngine
 import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
+import dev.wads.motoridecallconnect.stt.queue.FileBackedTranscriptionChunkQueue
+import dev.wads.motoridecallconnect.stt.queue.TranscriptionChunkQueue
+import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
 import dev.wads.motoridecallconnect.transport.SignalingClient
 import dev.wads.motoridecallconnect.transport.WebRtcClient
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
@@ -72,6 +75,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         private const val TRANSCRIPTION_MIN_CONTEXT_MS = 3_000L
         private const val TRANSCRIPTION_SILENCE_FLUSH_MS = 3_000L
         private const val TRANSCRIPTION_MAX_CHUNK_MS = 45_000L
+        private const val TRANSCRIPTION_TRIM_FRAME_MS = 20L
+        private const val TRANSCRIPTION_TRIM_PREROLL_MS = 200L
+        private const val TRANSCRIPTION_TRIM_POSTROLL_MS = 200L
+        private const val TRANSCRIPTION_MIN_TRIMMED_MS = 700L
     }
 
     private val binder = LocalBinder()
@@ -85,6 +92,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var audioFocusRequest: AudioFocusRequest? = null
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private lateinit var transcriptionQueue: TranscriptionChunkQueue
 
     private var callback: ServiceCallback? = null
 
@@ -130,6 +138,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var isBluetoothAudioRouteActive = false
     private var currentAudioRouteLabel = AUDIO_ROUTE_LABEL_BT_UNAVAILABLE
     private var communicationDeviceChangedListener: AudioManager.OnCommunicationDeviceChangedListener? = null
+    private val transcriptionWorkerLock = Any()
+    private var isTranscriptionWorkerRunning = false
 
     private data class AudioRouteState(
         val label: String,
@@ -147,7 +157,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     interface ServiceCallback {
-        fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
+        fun onTranscriptUpdate(
+            transcript: String,
+            isFinal: Boolean,
+            tripId: String? = null,
+            hostUid: String? = null,
+            tripPath: String? = null,
+            timestampMs: Long? = null
+        )
         fun onConnectionStatusChanged(status: dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus, peer: Device?)
         fun onTransmissionStateChanged(isLocalTransmitting: Boolean, isRemoteTransmitting: Boolean)
         fun onTripStatusChanged(
@@ -156,6 +173,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             hostUid: String? = null,
             tripPath: String? = null
         )
+        fun onTranscriptionQueueUpdated(snapshot: TranscriptionQueueSnapshot)
         fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean)
         fun onModelDownloadProgress(progress: Int)
         fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
@@ -224,10 +242,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         vad = SimpleVad()
         audioCapturer = AudioCapturer(this)
+        transcriptionQueue = FileBackedTranscriptionChunkQueue(this)
         signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         registerAudioRouteCallbacks()
         refreshAudioRouteState(reason = "service_create")
+        publishTranscriptionQueueSnapshot(reason = "service_create")
         Log.i(TAG, "Service created. Idle until connect/host/trip events.")
     }
 
@@ -270,6 +290,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
         callback.onTransmissionStateChanged(isTransmitting, isRemoteTransmitting)
         callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
+        callback.onTranscriptionQueueUpdated(transcriptionQueue.snapshot())
         callback.onAudioRouteChanged(currentAudioRouteLabel, isBluetoothAudioRouteActive, isBluetoothRequired = true)
     }
 
@@ -442,6 +463,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 }
                 if (isTripActive && isBluetoothAudioRouteActive) {
                     recognizer.startListening()
+                    scheduleTranscriptionQueueProcessing(reason = "trip_start")
                 }
             }
         } else if ((modelChanged || engineChanged) && tripActive) {
@@ -456,6 +478,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 }
                 if (isTripActive && isBluetoothAudioRouteActive) {
                     recognizer.startListening()
+                    scheduleTranscriptionQueueProcessing(reason = "config_engine_or_model_changed")
                 }
             }
         }
@@ -517,6 +540,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         syncOutgoingAudioState(reason = "configuration_update")
         updateCommunicationAudioProfile(reason = "configuration_update")
+        if (transcriptionQueue.snapshot().totalCount > 0) {
+            scheduleTranscriptionQueueProcessing(reason = "configuration_update")
+        }
     }
 
     // --- SignalingListener Callbacks ---
@@ -751,12 +777,26 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     // --- SpeechRecognitionListener Callbacks ---
     override fun onPartialResults(results: String) {
         Log.v(TAG, "Partial transcript len=${results.length}")
-        callback?.onTranscriptUpdate(results, false)
+        callback?.onTranscriptUpdate(
+            transcript = results,
+            isFinal = false,
+            tripId = currentTripId,
+            hostUid = currentTripHostUid,
+            tripPath = currentTripPath,
+            timestampMs = System.currentTimeMillis()
+        )
     }
 
     override fun onFinalResults(results: String) {
         Log.i(TAG, "Final transcript len=${results.length}: $results")
-        callback?.onTranscriptUpdate(results, true)
+        callback?.onTranscriptUpdate(
+            transcript = results,
+            isFinal = true,
+            tripId = currentTripId,
+            hostUid = currentTripHostUid,
+            tripPath = currentTripPath,
+            timestampMs = System.currentTimeMillis()
+        )
         if (currentMode == OperatingMode.VOICE_COMMAND) {
             handleVoiceCommand(results)
         }
@@ -1114,6 +1154,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         lifecycleScope.launch {
             if (isTripActive && isBluetoothAudioRouteActive) {
                 getOrCreateSpeechRecognizerHelper().startListening()
+                scheduleTranscriptionQueueProcessing(reason = "audio_route_recovered")
             }
         }
     }
@@ -1220,11 +1261,29 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         return (sampleCount * 1000L) / AUDIO_SAMPLE_RATE_HZ
     }
 
+    private fun durationMsToBytes(durationMs: Long): Int {
+        if (durationMs <= 0L) {
+            return 0
+        }
+        val sampleCount = (AUDIO_SAMPLE_RATE_HZ * durationMs) / 1000L
+        return (sampleCount * AUDIO_BYTES_PER_SAMPLE).toInt().coerceAtLeast(AUDIO_BYTES_PER_SAMPLE)
+    }
+
+    private data class TrimmedChunk(
+        val bytes: ByteArray,
+        val hadSpeech: Boolean,
+        val removedLeadingMs: Long,
+        val removedTrailingMs: Long
+    )
+
     private fun flushTranscriptionBuffer(force: Boolean, reason: String) {
         val chunk: ByteArray
         val chunkDurationMs: Long
         val silenceMs: Long
         val hadSpeech: Boolean
+        val tripIdSnapshot: String?
+        val tripHostUidSnapshot: String?
+        val tripPathSnapshot: String?
         synchronized(transcriptionStateLock) {
             if (audioBuffer.isEmpty()) {
                 resetTranscriptionStateLocked(clearAudio = false)
@@ -1239,6 +1298,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             chunkDurationMs = bufferedAudioDurationMs
             silenceMs = consecutiveSilenceDurationMs
             hadSpeech = chunkHadSpeech
+            tripIdSnapshot = currentTripId
+            tripHostUidSnapshot = currentTripHostUid
+            tripPathSnapshot = currentTripPath
             resetTranscriptionStateLocked(clearAudio = true)
         }
 
@@ -1251,29 +1313,59 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             return
         }
 
+        val tripId = tripIdSnapshot
+        if (tripId.isNullOrBlank()) {
+            Log.w(TAG, "Dropping transcription chunk because tripId is null. reason=$reason")
+            return
+        }
+
+        val trimmedChunk = trimAbsoluteSilence(chunk)
+        if (!force && !trimmedChunk.hadSpeech) {
+            Log.d(
+                TAG,
+                "Dropping chunk after silence trimming (no speech). bytes=${chunk.size}, " +
+                    "durationMs=$chunkDurationMs, reason=$reason"
+            )
+            return
+        }
+
+        val dataToQueue = when {
+            trimmedChunk.bytes.isNotEmpty() -> trimmedChunk.bytes
+            force && hadSpeech -> chunk
+            else -> ByteArray(0)
+        }
+        if (dataToQueue.isEmpty()) {
+            Log.d(TAG, "Dropping empty trimmed chunk. reason=$reason")
+            return
+        }
+
+        val queueDurationMs = bytesToDurationMs(dataToQueue.size)
+        val chunkCreatedAtMs = System.currentTimeMillis()
+        val queuedChunk = transcriptionQueue.enqueue(
+            chunk = dataToQueue,
+            tripId = tripId,
+            hostUid = tripHostUidSnapshot,
+            tripPath = tripPathSnapshot,
+            createdAtMs = chunkCreatedAtMs,
+            durationMs = queueDurationMs
+        )
+        if (queuedChunk == null) {
+            Log.e(TAG, "Failed to enqueue STT chunk for tripId=$tripId")
+            return
+        }
+
         totalChunksDispatched++
         val chunkId = totalChunksDispatched
 
         Log.i(
             TAG,
-            "Dispatching chunk #$chunkId to STT. bytes=${chunk.size}, durationMs=$chunkDurationMs, " +
-                "silenceMs=$silenceMs, hadSpeech=$hadSpeech, reason=$reason, " +
-                "sttEngine=$sttEngine, whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}"
+            "Queued chunk #$chunkId for STT. queueId=${queuedChunk.id}, bytes=${dataToQueue.size}, " +
+                "durationMs=$queueDurationMs, originalDurationMs=$chunkDurationMs, silenceMs=$silenceMs, " +
+                "hadSpeech=$hadSpeech, trimmedLeadingMs=${trimmedChunk.removedLeadingMs}, " +
+                "trimmedTrailingMs=${trimmedChunk.removedTrailingMs}, reason=$reason, sttEngine=$sttEngine"
         )
-
-        val recognizer = speechRecognizerHelper
-        if (recognizer == null) {
-            Log.w(TAG, "Dropping STT chunk #$chunkId because recognizer is not initialized.")
-            return
-        }
-
-        transcriptionExecutor.execute {
-            try {
-                recognizer.processAudio(chunk)
-            } catch (t: Throwable) {
-                Log.e(TAG, "STT chunk #$chunkId failed", t)
-            }
-        }
+        publishTranscriptionQueueSnapshot(reason = "chunk_enqueued")
+        scheduleTranscriptionQueueProcessing(reason = "chunk_enqueued")
     }
 
     private fun resetTranscriptionState(clearAudio: Boolean) {
@@ -1289,6 +1381,163 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         bufferedAudioDurationMs = 0L
         consecutiveSilenceDurationMs = 0L
         chunkHadSpeech = false
+    }
+
+    private fun trimAbsoluteSilence(chunk: ByteArray): TrimmedChunk {
+        if (chunk.isEmpty()) {
+            return TrimmedChunk(ByteArray(0), hadSpeech = false, removedLeadingMs = 0L, removedTrailingMs = 0L)
+        }
+
+        val frameBytes = durationMsToBytes(TRANSCRIPTION_TRIM_FRAME_MS).coerceAtLeast(AUDIO_BYTES_PER_SAMPLE)
+        if (frameBytes <= 0 || chunk.size <= frameBytes) {
+            val hasSpeech = vad.isSpeech(chunk)
+            return if (hasSpeech) {
+                TrimmedChunk(chunk, hadSpeech = true, removedLeadingMs = 0L, removedTrailingMs = 0L)
+            } else {
+                TrimmedChunk(ByteArray(0), hadSpeech = false, removedLeadingMs = 0L, removedTrailingMs = bytesToDurationMs(chunk.size))
+            }
+        }
+
+        var firstSpeechStart = -1
+        var lastSpeechEnd = -1
+        var cursor = 0
+
+        while (cursor < chunk.size) {
+            val end = (cursor + frameBytes).coerceAtMost(chunk.size)
+            val frame = chunk.copyOfRange(cursor, end)
+            if (vad.isSpeech(frame)) {
+                if (firstSpeechStart < 0) {
+                    firstSpeechStart = cursor
+                }
+                lastSpeechEnd = end
+            }
+            cursor = end
+        }
+
+        if (firstSpeechStart < 0 || lastSpeechEnd <= 0) {
+            return TrimmedChunk(
+                bytes = ByteArray(0),
+                hadSpeech = false,
+                removedLeadingMs = bytesToDurationMs(chunk.size),
+                removedTrailingMs = 0L
+            )
+        }
+
+        val preRollBytes = durationMsToBytes(TRANSCRIPTION_TRIM_PREROLL_MS)
+        val postRollBytes = durationMsToBytes(TRANSCRIPTION_TRIM_POSTROLL_MS)
+        var start = (firstSpeechStart - preRollBytes).coerceAtLeast(0)
+        var end = (lastSpeechEnd + postRollBytes).coerceAtMost(chunk.size)
+        var trimmed = chunk.copyOfRange(start, end)
+
+        if (bytesToDurationMs(trimmed.size) < TRANSCRIPTION_MIN_TRIMMED_MS) {
+            start = 0
+            end = chunk.size
+            trimmed = chunk
+        }
+
+        return TrimmedChunk(
+            bytes = trimmed,
+            hadSpeech = true,
+            removedLeadingMs = bytesToDurationMs(start),
+            removedTrailingMs = bytesToDurationMs(chunk.size - end)
+        )
+    }
+
+    private fun scheduleTranscriptionQueueProcessing(reason: String) {
+        transcriptionExecutor.execute {
+            processTranscriptionQueue(reason)
+        }
+    }
+
+    private fun processTranscriptionQueue(triggerReason: String) {
+        synchronized(transcriptionWorkerLock) {
+            if (isTranscriptionWorkerRunning) {
+                return
+            }
+            isTranscriptionWorkerRunning = true
+        }
+
+        try {
+            val recognizer = getOrCreateSpeechRecognizerHelper()
+            recognizer.startListening()
+            while (true) {
+                val queuedChunk = transcriptionQueue.pollNextPending() ?: break
+                publishTranscriptionQueueSnapshot(reason = "chunk_processing_started")
+
+                val audioBytes = transcriptionQueue.readAudioBytes(queuedChunk)
+                if (audioBytes == null) {
+                    transcriptionQueue.markFailed(queuedChunk.id, "Missing persisted audio chunk file.")
+                    publishTranscriptionQueueSnapshot(reason = "chunk_processing_missing_audio")
+                    continue
+                }
+
+                val startMs = System.currentTimeMillis()
+                val result = runCatching { recognizer.transcribeChunk(audioBytes) }
+                    .getOrElse { throwable ->
+                        SpeechRecognizerHelper.ChunkTranscriptionResult(
+                            error = throwable.message ?: "Unknown STT processing failure."
+                        )
+                    }
+                val elapsedMs = System.currentTimeMillis() - startMs
+                val finalText = result.text.orEmpty().trim()
+
+                when {
+                    !result.error.isNullOrBlank() -> {
+                        transcriptionQueue.markFailed(queuedChunk.id, result.error)
+                        publishTranscriptionQueueSnapshot(reason = "chunk_processing_error")
+                        Log.e(
+                            TAG,
+                            "Queued STT chunk failed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, error=${result.error}"
+                        )
+                    }
+                    finalText.isBlank() -> {
+                        transcriptionQueue.markFailed(queuedChunk.id, "No final transcript generated.")
+                        publishTranscriptionQueueSnapshot(reason = "chunk_processing_empty_result")
+                        Log.w(
+                            TAG,
+                            "Queued STT chunk produced empty result. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs"
+                        )
+                    }
+                    else -> {
+                        transcriptionQueue.markSucceeded(queuedChunk.id)
+                        publishTranscriptionQueueSnapshot(reason = "chunk_processing_success")
+                        callback?.onTranscriptUpdate(
+                            transcript = finalText,
+                            isFinal = true,
+                            tripId = queuedChunk.tripId,
+                            hostUid = queuedChunk.hostUid,
+                            tripPath = queuedChunk.tripPath,
+                            timestampMs = queuedChunk.createdAtMs
+                        )
+                        if (currentMode == OperatingMode.VOICE_COMMAND && currentTripId == queuedChunk.tripId && isTripActive) {
+                            handleVoiceCommand(finalText)
+                        }
+                        Log.i(
+                            TAG,
+                            "Queued STT chunk transcribed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, " +
+                                "textLen=${finalText.length}"
+                        )
+                    }
+                }
+            }
+            Log.d(TAG, "Transcription queue drained. triggerReason=$triggerReason")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Unexpected transcription queue worker failure. triggerReason=$triggerReason", t)
+        } finally {
+            synchronized(transcriptionWorkerLock) {
+                isTranscriptionWorkerRunning = false
+            }
+        }
+    }
+
+    private fun publishTranscriptionQueueSnapshot(reason: String) {
+        val snapshot = transcriptionQueue.snapshot()
+        callback?.onTranscriptionQueueUpdated(snapshot)
+        Log.d(
+            TAG,
+            "Transcription queue snapshot. reason=$reason, pending=${snapshot.pendingCount}, " +
+                "processing=${snapshot.processingCount}, failed=${snapshot.failedCount}, total=${snapshot.totalCount}"
+        )
     }
 
     private fun restartSignalingServer() {
