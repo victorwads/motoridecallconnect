@@ -26,6 +26,7 @@ class UserPreferences(private val context: Context) {
         val WHISPER_MODEL_ID = stringPreferencesKey("whisper_model_id")
         val VAD_START_DELAY_SECONDS = floatPreferencesKey("vad_start_delay_seconds")
         val VAD_STOP_DELAY_SECONDS = floatPreferencesKey("vad_stop_delay_seconds")
+        val AUTO_CONNECT_NEARBY_FRIENDS = booleanPreferencesKey("auto_connect_nearby_friends")
     }
 
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data
@@ -81,6 +82,11 @@ class UserPreferences(private val context: Context) {
     val vadStopDelaySeconds: Flow<Float?> = context.dataStore.data
         .map { preferences ->
             preferences[VAD_STOP_DELAY_SECONDS]
+        }
+
+    val autoConnectNearbyFriends: Flow<Boolean?> = context.dataStore.data
+        .map { preferences ->
+            preferences[AUTO_CONNECT_NEARBY_FRIENDS]
         }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
@@ -146,6 +152,12 @@ class UserPreferences(private val context: Context) {
     suspend fun setVadStopDelaySeconds(seconds: Float) {
         context.dataStore.edit { preferences ->
             preferences[VAD_STOP_DELAY_SECONDS] = seconds
+        }
+    }
+
+    suspend fun setAutoConnectNearbyFriends(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[AUTO_CONNECT_NEARBY_FRIENDS] = enabled
         }
     }
 }

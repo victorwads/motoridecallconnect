@@ -17,10 +17,10 @@ import androidx.room.PrimaryKey
 data class TranscriptLine(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val tripId: String,
+    val tripId: String = "",
     val authorId: String = "", // Firestore UID of the author
     val authorName: String = "", // Display name for UI convenience
-    val text: String,
+    val text: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val isPartial: Boolean
+    val isPartial: Boolean = false
 )

@@ -27,7 +27,8 @@ data class SettingsUiState(
     val sttEngine: SttEngine = SttEngine.WHISPER,
     val whisperModelId: String = WhisperModelCatalog.defaultOption.id,
     val vadStartDelaySeconds: Float = DEFAULT_VAD_START_DELAY_SECONDS,
-    val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS
+    val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS,
+    val autoConnectNearbyFriends: Boolean = false
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -90,6 +91,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         }
+        viewModelScope.launch {
+            preferences.autoConnectNearbyFriends.collect { saved ->
+                if (saved != null) {
+                    _uiState.update { it.copy(autoConnectNearbyFriends = saved) }
+                }
+            }
+        }
     }
 
     fun onModeChange(mode: OperatingMode) {
@@ -148,6 +156,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(vadStopDelaySeconds = normalized) }
         viewModelScope.launch {
             preferences.setVadStopDelaySeconds(normalized)
+        }
+    }
+
+    fun onAutoConnectNearbyFriendsChange(enabled: Boolean) {
+        _uiState.update { it.copy(autoConnectNearbyFriends = enabled) }
+        viewModelScope.launch {
+            preferences.setAutoConnectNearbyFriends(enabled)
         }
     }
 

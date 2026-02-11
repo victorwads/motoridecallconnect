@@ -176,6 +176,7 @@ fun AppNavigation(
                     whisperModelId = uiState.whisperModelId,
                     vadStartDelaySeconds = uiState.vadStartDelaySeconds,
                     vadStopDelaySeconds = uiState.vadStopDelaySeconds,
+                    autoConnectNearbyFriends = uiState.autoConnectNearbyFriends,
                     onModeChange = { settingsViewModel.onModeChange(it) },
                     onStartCommandChange = { settingsViewModel.onStartCommandChange(it) },
                     onStopCommandChange = { settingsViewModel.onStopCommandChange(it) },
@@ -184,6 +185,7 @@ fun AppNavigation(
                     onWhisperModelChange = { settingsViewModel.onWhisperModelChange(it) },
                     onVadStartDelayChange = { settingsViewModel.onVadStartDelayChange(it) },
                     onVadStopDelayChange = { settingsViewModel.onVadStopDelayChange(it) },
+                    onAutoConnectNearbyFriendsChange = { settingsViewModel.onAutoConnectNearbyFriendsChange(it) },
                     onNavigateBack = { navController.popBackStack() },
                     onTestAudio = { showAudioTest = true },
                     onLogout = {

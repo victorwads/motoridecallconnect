@@ -22,18 +22,41 @@ import androidx.room.Room
 import dev.wads.motoridecallconnect.data.local.AppDatabase
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.service.AudioService
+import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.ui.common.ViewModelFactory
 import dev.wads.motoridecallconnect.ui.navigation.AppNavigation
 import dev.wads.motoridecallconnect.ui.theme.MotoRideCallConnectTheme
+import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
+    companion object {
+        private const val AUTO_CONNECT_COOLDOWN_MS = 15_000L
+    }
+
+    private data class AutoConnectContext(
+        val enabled: Boolean,
+        val discoveredDevices: List<Device>,
+        val connectionStatus: ConnectionStatus,
+        val connectedPeer: Device?,
+        val isHosting: Boolean,
+        val friendIds: Set<String>
+    )
 
     private var audioService: AudioService? = null
     private var isBound = false
     private var isBindingService = false
     private val pendingServiceActions = mutableListOf<(AudioService) -> Unit>()
+    private var friendsObserverJob: Job? = null
+    private var autoConnectObserverJob: Job? = null
+    private val friendIdsState = MutableStateFlow<Set<String>>(emptySet())
+    private val autoConnectAttemptTimestamps = mutableMapOf<String, Long>()
 
     private val database by lazy {
         Room.databaseBuilder(
@@ -59,6 +82,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         val currentUid = auth.currentUser?.uid
         if (currentUid == null) {
             lastObservedAuthUid = null
+            friendIdsState.value = emptySet()
+            friendsObserverJob?.cancel()
+            friendsObserverJob = null
             return@AuthStateListener
         }
 
@@ -71,6 +97,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     Log.w("MainActivity", "Failed to update public profile for $currentUid", error)
                 }
         }
+        restartFriendsObserver()
     }
 
     private val connection = object : ServiceConnection {
@@ -213,6 +240,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 )
             }
         }
+
+        startAutoConnectObserver()
+        restartFriendsObserver()
     }
 
     private fun ensureAudioServiceReady(action: (AudioService) -> Unit) {
@@ -305,7 +335,11 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onPause() {
         super.onPause()
-        pairingViewModel.stopDiscovery()
+        val autoConnectEnabled = settingsViewModel.uiState.value.autoConnectNearbyFriends
+        val hosting = pairingViewModel.isHosting.value
+        if (!autoConnectEnabled || hosting) {
+            pairingViewModel.stopDiscovery()
+        }
     }
 
     override fun onStart() {
@@ -322,6 +356,108 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onDestroy() {
         super.onDestroy()
+        autoConnectObserverJob?.cancel()
+        friendsObserverJob?.cancel()
         unbindAudioService()
+    }
+
+    private fun startAutoConnectObserver() {
+        if (autoConnectObserverJob != null) {
+            return
+        }
+        autoConnectObserverJob = lifecycleScope.launch {
+            combine(
+                settingsViewModel.uiState.map { it.autoConnectNearbyFriends },
+                pairingViewModel.discoveredDevices,
+                pairingViewModel.connectionStatus,
+                pairingViewModel.connectedPeer,
+                pairingViewModel.isHosting
+            ) { enabled, discoveredDevices, connectionStatus, connectedPeer, isHosting ->
+                AutoConnectContext(
+                    enabled = enabled,
+                    discoveredDevices = discoveredDevices,
+                    connectionStatus = connectionStatus,
+                    connectedPeer = connectedPeer,
+                    isHosting = isHosting,
+                    friendIds = emptySet()
+                )
+            }
+                .combine(friendIdsState) { context, friendIds ->
+                    context.copy(friendIds = friendIds)
+                }
+                .collect { context ->
+                    maybeAutoConnectNearbyFriend(context)
+                }
+        }
+    }
+
+    private fun restartFriendsObserver() {
+        val currentUid = firebaseAuth.currentUser?.uid
+        if (currentUid.isNullOrBlank()) {
+            friendIdsState.value = emptySet()
+            friendsObserverJob?.cancel()
+            friendsObserverJob = null
+            return
+        }
+
+        friendsObserverJob?.cancel()
+        friendsObserverJob = lifecycleScope.launch {
+            socialRepository.getFriends()
+                .map { friends ->
+                    friends.mapNotNull { friend ->
+                        friend.uid.takeIf { it.isNotBlank() }
+                    }.toSet()
+                }
+                .catch { error ->
+                    Log.w("MainActivity", "Failed to observe friends for auto-connect", error)
+                    emit(emptySet())
+                }
+                .collect { friendIds ->
+                    friendIdsState.value = friendIds
+                }
+        }
+    }
+
+    private fun maybeAutoConnectNearbyFriend(context: AutoConnectContext) {
+        if (!context.enabled || context.isHosting) {
+            return
+        }
+        if (context.connectionStatus == ConnectionStatus.CONNECTED || context.connectionStatus == ConnectionStatus.CONNECTING) {
+            return
+        }
+        if (context.friendIds.isEmpty()) {
+            return
+        }
+
+        val localUid = firebaseAuth.currentUser?.uid
+        val candidate = context.discoveredDevices.firstOrNull { device ->
+            !device.id.isBlank() &&
+                context.friendIds.contains(device.id) &&
+                device.id != localUid &&
+                !device.ip.isNullOrBlank() &&
+                device.port != null
+        } ?: return
+
+        val now = System.currentTimeMillis()
+        val lastAttempt = autoConnectAttemptTimestamps[candidate.id] ?: 0L
+        if (now - lastAttempt < AUTO_CONNECT_COOLDOWN_MS) {
+            return
+        }
+        autoConnectAttemptTimestamps[candidate.id] = now
+        trimAutoConnectAttempts()
+
+        Log.i("MainActivity", "Auto-connecting to nearby friend ${candidate.id}/${candidate.name}")
+        pairingViewModel.updateConnectionStatus(ConnectionStatus.CONNECTING, candidate)
+        ensureAudioServiceReady { service ->
+            service.connectToPeer(candidate)
+        }
+    }
+
+    private fun trimAutoConnectAttempts() {
+        if (autoConnectAttemptTimestamps.size <= 64) {
+            return
+        }
+        val cutoff = System.currentTimeMillis() - AUTO_CONNECT_COOLDOWN_MS * 2
+        autoConnectAttemptTimestamps.entries.removeAll { it.value < cutoff }
     }
 }

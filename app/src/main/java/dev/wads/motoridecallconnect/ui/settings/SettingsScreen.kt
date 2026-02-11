@@ -75,6 +75,7 @@ fun SettingsScreen(
     whisperModelId: String,
     vadStartDelaySeconds: Float,
     vadStopDelaySeconds: Float,
+    autoConnectNearbyFriends: Boolean,
     onModeChange: (OperatingMode) -> Unit,
     onStartCommandChange: (String) -> Unit,
     onStopCommandChange: (String) -> Unit,
@@ -83,6 +84,7 @@ fun SettingsScreen(
     onWhisperModelChange: (String) -> Unit,
     onVadStartDelayChange: (Float) -> Unit,
     onVadStopDelayChange: (Float) -> Unit,
+    onAutoConnectNearbyFriendsChange: (Boolean) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
@@ -168,6 +170,29 @@ fun SettingsScreen(
                     onValueChange = onStopCommandChange,
                     label = { Text(stringResource(R.string.stop_command_label)) },
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.auto_connect_friends_title),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = stringResource(R.string.auto_connect_friends_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoConnectNearbyFriends,
+                    onCheckedChange = onAutoConnectNearbyFriendsChange
                 )
             }
 
@@ -431,6 +456,7 @@ private fun SettingsScreenPreview() {
                 whisperModelId = WhisperModelCatalog.defaultOption.id,
                 vadStartDelaySeconds = 0f,
                 vadStopDelaySeconds = 1.5f,
+                autoConnectNearbyFriends = false,
                 onModeChange = {},
                 onStartCommandChange = {},
                 onStopCommandChange = {},
@@ -439,6 +465,7 @@ private fun SettingsScreenPreview() {
                 onWhisperModelChange = {},
                 onVadStartDelayChange = {},
                 onVadStopDelayChange = {},
+                onAutoConnectNearbyFriendsChange = {},
                 onTestAudio = {},
                 onNavigateBack = {},
                 onLogout = {}

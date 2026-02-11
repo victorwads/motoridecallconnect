@@ -108,6 +108,8 @@
     <string name="vad_delay_hint">Adjust how long speech/silence must persist before toggling transmission.</string>
     <string name="vad_start_delay_label">Start delay: %1$.1f s</string>
     <string name="vad_stop_delay_label">Stop delay: %1$.1f s</string>
+    <string name="auto_connect_friends_title">Auto-connect nearby friends</string>
+    <string name="auto_connect_friends_desc">Automatically connect when a nearby host is in your friends list.</string>
 
     <!-- Navigation & History -->
     <string name="nav_active_trip">Home</string>
