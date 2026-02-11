@@ -189,8 +189,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
+            val sdpMid = candidate.sdpMid.orEmpty()
              signalingClient.sendMessage(
-                 "ICE64:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${encodeSignalPayload(candidate.sdp)}"
+                 "ICE64:$sdpMid:${candidate.sdpMLineIndex}:${encodeSignalPayload(candidate.sdp)}"
              )
         }
         override fun onDataChannel(channel: DataChannel?) {
@@ -680,7 +681,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     override fun onIceCandidateReceived(candidate: String) {
         val parts = candidate.split(":", limit = 3)
         if (parts.size >= 3) {
-            val mid = parts[0]
+            val mid = parts[0].takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
             val index = parts[1].toIntOrNull() ?: return
             val sdp = normalizeSignaledSdp(parts[2])
             webRtcClient.addIceCandidate(IceCandidate(mid, index, sdp))
