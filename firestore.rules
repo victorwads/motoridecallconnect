@@ -1,0 +1,75 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // -------------------------
+    // AccountsPublicInfo/{uid}
+    // Public get allowed, list blocked
+    // -------------------------
+    match /AccountsPublicInfo/{uid} {
+      allow get: if true;
+      allow list: if false;
+
+      allow create, update, delete: if isOwner(uid);
+    }
+
+    // -------------------------
+    // Accounts/{uid}/... (default: only owner)
+    // -------------------------
+    match /Accounts/{uid} {
+
+      // account root doc
+      allow get, list: if isOwner(uid);
+      allow create, update, delete: if isOwner(uid);
+
+      // Friends: only owner can manage
+      match /Friends/{friendUid} {
+        allow get, list: if isOwner(uid);
+        allow create, update: if isOwner(uid);
+        allow delete: if isOwner(friendUid) || isOwner(uid);
+      }
+
+      // Rides: only owner can manage
+      match /Rides/{rideId} {
+        allow get, list: if isOwner(uid);
+        allow create, update, delete: if isOwner(uid);
+      }
+
+      // FriendRequests:
+      // - requester can create/delete their own request doc
+      // - receiver (owner uid) can read/list and delete (accept/deny)
+      match /FriendRequests/{requesterUid} {
+        // read:
+        // owner sees all requests; requester can read their own request doc
+        allow get: if isOwner(uid) || isOwner(requesterUid);
+        allow list: if isOwner(uid);
+
+        // create:
+        // requester writes into target user's FriendRequests/{requesterUid}
+        allow create: if isOwner(requesterUid);
+
+        // delete:
+        // requester can cancel; owner can remove when accepting/denying
+        allow delete: if isOwner(uid) || isOwner(requesterUid);
+
+        // update:
+        // usually you don't need updates for requests; keep it locked
+        allow update: if false;
+      }
+
+      // Any other subcollections/docs under Accounts/{uid}/...
+      match /{document=**} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+  }
+}
