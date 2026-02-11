@@ -33,6 +33,12 @@ interface TripDao {
     @Query("SELECT * FROM trips ORDER BY startTime DESC")
     fun getAllTrips(): Flow<List<Trip>>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM transcript_lines WHERE tripId = :tripId LIMIT 1)")
+    fun hasTranscriptForTrip(tripId: String): Flow<Boolean>
+
+    @Query("DELETE FROM trips WHERE id = :tripId")
+    suspend fun deleteTripById(tripId: String)
+
     @Transaction
     @Query("SELECT * FROM trips WHERE id = :tripId")
     fun getTripWithTranscripts(tripId: String): Flow<TripWithTranscripts>

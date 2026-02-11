@@ -1,19 +1,23 @@
 package dev.wads.motoridecallconnect.data.repository
 
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import dev.wads.motoridecallconnect.data.local.TripDao
 import dev.wads.motoridecallconnect.data.local.TripWithTranscripts
-import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.model.TranscriptLine
+import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.tasks.await
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -42,6 +46,53 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
             }
         } else {
             tripDaoProvider().getAllTrips()
+        }
+    }
+
+    fun observeTranscriptAvailability(tripIds: List<String>): Flow<Map<String, Boolean>> {
+        val distinctTripIds = tripIds.distinct()
+        if (distinctTripIds.isEmpty()) return flowOf(emptyMap())
+
+        val user = auth.currentUser
+        return if (user != null) {
+            callbackFlow {
+                val transcriptStatus = distinctTripIds.associateWith { false }.toMutableMap()
+                val listeners = mutableListOf<ListenerRegistration>()
+
+                trySend(transcriptStatus.toMap())
+
+                distinctTripIds.forEach { tripId ->
+                    val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                        .document(user.uid)
+                        .collection(FirestorePaths.RIDES)
+                        .document(tripId)
+                        .collection(FirestorePaths.RIDE_TRANSCRIPTS)
+                        .limit(1)
+                        .addSnapshotListener { snapshot, error ->
+                            if (error != null) {
+                                close(error)
+                                return@addSnapshotListener
+                            }
+
+                            transcriptStatus[tripId] = snapshot?.isEmpty == false
+                            trySend(transcriptStatus.toMap())
+                        }
+
+                    listeners.add(listener)
+                }
+
+                awaitClose { listeners.forEach { it.remove() } }
+            }
+        } else {
+            combine(
+                distinctTripIds.map { tripId ->
+                    tripDaoProvider().hasTranscriptForTrip(tripId)
+                }
+            ) { availability ->
+                distinctTripIds
+                    .mapIndexed { index, tripId -> tripId to availability[index] }
+                    .toMap()
+            }
         }
     }
 
@@ -127,6 +178,41 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
             }
         } else {
             tripDaoProvider().insertTranscriptLine(transcriptLine)
+        }
+    }
+
+    suspend fun deleteTrip(tripId: String) {
+        val user = auth.currentUser
+        if (user != null) {
+            val tripRef = firestore.collection(FirestorePaths.ACCOUNTS)
+                .document(user.uid)
+                .collection(FirestorePaths.RIDES)
+                .document(tripId)
+
+            deleteCollectionInBatches(tripRef.collection(FirestorePaths.RIDE_TRANSCRIPTS))
+            tripRef.delete().await()
+        } else {
+            tripDaoProvider().deleteTripById(tripId)
+        }
+    }
+
+    private suspend fun deleteCollectionInBatches(
+        collectionRef: CollectionReference,
+        batchSize: Long = 200L
+    ) {
+        while (true) {
+            val snapshot = collectionRef.limit(batchSize).get().await()
+            if (snapshot.isEmpty) break
+
+            val batch = firestore.batch()
+            snapshot.documents.forEach { document ->
+                batch.delete(document.reference)
+            }
+            batch.commit().await()
+
+            if (snapshot.size() < batchSize.toInt()) {
+                break
+            }
         }
     }
 }

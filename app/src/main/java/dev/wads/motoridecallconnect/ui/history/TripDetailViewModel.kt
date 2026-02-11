@@ -6,16 +6,22 @@ import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.data.model.TranscriptLine
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.repository.TripRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class TripDetailUiState(
     val trip: Trip? = null,
     val transcripts: List<TranscriptLine> = emptyList(),
-    val isLoading: Boolean = true
+    val isLoading: Boolean = true,
+    val isDeleting: Boolean = false,
+    val errorMessage: String? = null
 )
 
 class TripDetailViewModel(private val repository: TripRepository) : ViewModel() {
@@ -23,41 +29,59 @@ class TripDetailViewModel(private val repository: TripRepository) : ViewModel() 
     private val _uiState = MutableStateFlow(TripDetailUiState())
     val uiState: StateFlow<TripDetailUiState> = _uiState.asStateFlow()
 
-    fun loadTrip(tripId: String) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true)
-            
-            val currentUser = FirebaseAuth.getInstance().currentUser
-            val currentUserId = currentUser?.uid ?: ""
+    private var loadJob: Job? = null
 
-            // Combine trip data and transcript data
-            // Note: getTripWithTranscripts returns empty transcripts currently, so we use getTranscripts separately if possible
-            // But getTranscripts needs hostUid. We assume current user is host for history.
-            
-            // We can treat getTripWithTranscripts as just getting the trip for now since we know it returns empty list for transcripts from repo logic
-            
-            repository.getTripWithTranscripts(tripId).collect { tripWithTranscripts ->
-                if (tripWithTranscripts != null) {
-                    val trip = tripWithTranscripts.trip
-                    // Now fetch real transcripts
-                    if (currentUserId.isNotEmpty()) {
-                        repository.getTranscripts(currentUserId, tripId).collect { transcripts ->
-                            _uiState.value = TripDetailUiState(
-                                trip = trip,
-                                transcripts = transcripts,
-                                isLoading = false
-                            )
-                        }
-                    } else {
-                         _uiState.value = TripDetailUiState(
-                                trip = trip,
-                                transcripts = tripWithTranscripts.transcripts,
-                                isLoading = false
-                            )
-                    }
+    fun loadTrip(tripId: String) {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            _uiState.update { state -> state.copy(isLoading = true, errorMessage = null) }
+
+            val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
+            val transcriptFlow = if (currentUserId.isNullOrEmpty()) {
+                flowOf(emptyList())
+            } else {
+                repository.getTranscripts(currentUserId, tripId)
+            }
+
+            combine(
+                repository.getTripWithTranscripts(tripId),
+                transcriptFlow
+            ) { tripWithTranscripts, remoteTranscripts ->
+                val trip = tripWithTranscripts?.trip
+                val transcripts = if (currentUserId.isNullOrEmpty()) {
+                    tripWithTranscripts?.transcripts ?: emptyList()
                 } else {
-                     _uiState.value = TripDetailUiState(isLoading = false)
+                    remoteTranscripts
                 }
+
+                TripDetailUiState(
+                    trip = trip,
+                    transcripts = transcripts,
+                    isLoading = false,
+                    isDeleting = _uiState.value.isDeleting,
+                    errorMessage = null
+                )
+            }.collect { newState ->
+                _uiState.value = newState.copy(isDeleting = _uiState.value.isDeleting)
+            }
+        }
+    }
+
+    fun deleteTrip(onDeleted: () -> Unit = {}) {
+        val tripId = _uiState.value.trip?.id ?: return
+        if (_uiState.value.isDeleting) return
+
+        viewModelScope.launch {
+            _uiState.update { state -> state.copy(isDeleting = true, errorMessage = null) }
+            try {
+                repository.deleteTrip(tripId)
+                onDeleted()
+            } catch (t: Throwable) {
+                _uiState.update { state ->
+                    state.copy(errorMessage = t.message ?: "Failed to delete trip")
+                }
+            } finally {
+                _uiState.update { state -> state.copy(isDeleting = false) }
             }
         }
     }

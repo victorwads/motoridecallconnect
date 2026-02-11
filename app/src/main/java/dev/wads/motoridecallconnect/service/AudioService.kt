@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -19,6 +20,8 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.stt.SpeechRecognizerHelper
+import dev.wads.motoridecallconnect.stt.SttEngine
+import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.transport.SignalingClient
 import dev.wads.motoridecallconnect.transport.WebRtcClient
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
@@ -77,6 +80,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var chunkHadSpeech = false
     private var isAudioCaptureRunning = false
     private var isHostingEnabled = false
+    private var sttEngine = SttEngine.WHISPER
+    private var whisperModelId = WhisperModelCatalog.defaultOption.id
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -88,7 +93,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
-             signalingClient.sendMessage("ICE:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${candidate.sdp.replace("\n", "|")}")
+             signalingClient.sendMessage(
+                 "ICE64:${candidate.sdpMid}:${candidate.sdpMLineIndex}:${encodeSignalPayload(candidate.sdp)}"
+             )
         }
         override fun onDataChannel(p0: DataChannel?) {}
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
@@ -215,13 +222,42 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
-    fun updateConfiguration(mode: OperatingMode, startCmd: String, stopCmd: String, tripActive: Boolean, tripId: String? = null) {
+    fun updateConfiguration(
+        mode: OperatingMode,
+        startCmd: String,
+        stopCmd: String,
+        sttEngine: SttEngine,
+        modelId: String,
+        tripActive: Boolean,
+        tripId: String? = null
+    ) {
+        val resolvedModelId = WhisperModelCatalog.findById(modelId)?.id
+            ?: WhisperModelCatalog.defaultOption.id
         val tripChanged = isTripActive != tripActive
         val wasTripActive = isTripActive
+        val engineChanged = this.sttEngine != sttEngine
+        val modelChanged = whisperModelId != resolvedModelId
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
+        this.sttEngine = sttEngine
+        whisperModelId = resolvedModelId
         isTripActive = tripActive
+
+        if (resolvedModelId != modelId) {
+            Log.w(TAG, "Unknown whisper model '$modelId'. Falling back to '$resolvedModelId'.")
+        }
+
+        if (modelChanged) {
+            flushTranscriptionBuffer(force = true, reason = "model_change")
+            resetTranscriptionState(clearAudio = true)
+            speechRecognizerHelper?.setWhisperModel(whisperModelId)
+        }
+        if (engineChanged) {
+            flushTranscriptionBuffer(force = true, reason = "stt_engine_change")
+            resetTranscriptionState(clearAudio = true)
+            speechRecognizerHelper?.setEngine(sttEngine)
+        }
 
         if (tripChanged && wasTripActive && !tripActive) {
             stopAudioCaptureIfNeeded(reason = "trip_end")
@@ -233,7 +269,29 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             startAudioCaptureIfNeeded()
             lifecycleScope.launch {
                 val recognizer = getOrCreateSpeechRecognizerHelper()
-                recognizer.downloadModelIfNeeded()
+                if (engineChanged) {
+                    recognizer.setEngine(sttEngine)
+                }
+                if (modelChanged) {
+                    recognizer.setWhisperModel(whisperModelId)
+                }
+                if (sttEngine == SttEngine.WHISPER) {
+                    recognizer.downloadModelIfNeeded()
+                }
+                if (isTripActive) {
+                    recognizer.startListening()
+                }
+            }
+        } else if ((modelChanged || engineChanged) && tripActive) {
+            lifecycleScope.launch {
+                val recognizer = getOrCreateSpeechRecognizerHelper()
+                if (engineChanged) {
+                    recognizer.setEngine(sttEngine)
+                }
+                recognizer.setWhisperModel(whisperModelId)
+                if (sttEngine == SttEngine.WHISPER) {
+                    recognizer.downloadModelIfNeeded()
+                }
                 if (isTripActive) {
                     recognizer.startListening()
                 }
@@ -243,7 +301,17 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (tripChanged) {
             Log.i(TAG, "Trip status changed locally. isTripActive=$isTripActive, tripId=$tripId")
         }
-        Log.d(TAG, "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
+        if (modelChanged) {
+            Log.i(TAG, "Whisper model changed locally. modelId=$whisperModelId")
+        }
+        if (engineChanged) {
+            Log.i(TAG, "STT engine changed locally. engine=$sttEngine")
+        }
+        Log.d(
+            TAG,
+            "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, " +
+                "SttEngine=$sttEngine, WhisperModel=$whisperModelId, TripActive=$tripActive"
+        )
         
         if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
             isTransmitting = true
@@ -257,20 +325,30 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     // --- SignalingListener Callbacks ---
-    override fun onPeerConnected() {
-        Log.d("AudioService", "Peer connected, sending name and creating offer")
+    override fun onPeerConnected(isInitiator: Boolean) {
+        Log.d("AudioService", "Peer connected. initiator=$isInitiator")
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
         signalingClient.sendMessage("NAME:${Build.MODEL}")
-        webRtcClient.createOffer(object : SdpObserver {
-            override fun onCreateSuccess(sdp: SessionDescription) {
-                webRtcClient.setLocalDescription(this, sdp)
-                signalingClient.sendMessage("OFFER:${sdp.description.replace("\n", "|")}")
-            }
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
-        })
+        if (isInitiator) {
+            webRtcClient.createOffer(object : SdpObserver {
+                override fun onCreateSuccess(sdp: SessionDescription) {
+                    webRtcClient.setLocalDescription(this, sdp)
+                    signalingClient.sendMessage("OFFER64:${encodeSignalPayload(sdp.description)}")
+                }
+                override fun onSetSuccess() {}
+                override fun onCreateFailure(reason: String?) {
+                    Log.e(TAG, "createOffer failed: $reason")
+                    connectionStatus = ConnectionStatus.ERROR
+                    callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+                }
+                override fun onSetFailure(reason: String?) {
+                    Log.e(TAG, "setLocalDescription(offer) failed: $reason")
+                    connectionStatus = ConnectionStatus.ERROR
+                    callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+                }
+            })
+        }
     }
 
     override fun onPeerInfoReceived(name: String) {
@@ -284,7 +362,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onOfferReceived(description: String) {
-        val sdpString = description.replace("|", "\n")
+        val sdpString = normalizeSignaledSdp(description)
         val sdp = SessionDescription(SessionDescription.Type.OFFER, sdpString)
         
         webRtcClient.setRemoteDescription(object : SdpObserver {
@@ -292,27 +370,43 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 webRtcClient.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(answerSdp: SessionDescription) {
                         webRtcClient.setLocalDescription(this, answerSdp)
-                        signalingClient.sendMessage("ANSWER:${answerSdp.description.replace("\n", "|")}")
+                        signalingClient.sendMessage("ANSWER64:${encodeSignalPayload(answerSdp.description)}")
                     }
                     override fun onSetSuccess() {}
-                    override fun onCreateFailure(s: String?) {}
-                    override fun onSetFailure(s: String?) {}
+                    override fun onCreateFailure(reason: String?) {
+                        Log.e(TAG, "createAnswer failed: $reason")
+                        connectionStatus = ConnectionStatus.ERROR
+                        callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+                    }
+                    override fun onSetFailure(reason: String?) {
+                        Log.e(TAG, "setLocalDescription(answer) failed: $reason")
+                        connectionStatus = ConnectionStatus.ERROR
+                        callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+                    }
                 })
             }
             override fun onCreateSuccess(s: SessionDescription?) {}
             override fun onCreateFailure(s: String?) {}
-            override fun onSetFailure(s: String?) {}
+            override fun onSetFailure(reason: String?) {
+                Log.e(TAG, "setRemoteDescription(offer) failed: $reason")
+                connectionStatus = ConnectionStatus.ERROR
+                callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+            }
         }, sdp)
     }
 
     override fun onAnswerReceived(description: String) {
-        val sdpString = description.replace("|", "\n")
+        val sdpString = normalizeSignaledSdp(description)
         val sdp = SessionDescription(SessionDescription.Type.ANSWER, sdpString)
         webRtcClient.setRemoteDescription(object : SdpObserver {
              override fun onSetSuccess() {}
              override fun onCreateSuccess(s: SessionDescription?) {}
              override fun onCreateFailure(s: String?) {}
-             override fun onSetFailure(s: String?) {}
+             override fun onSetFailure(reason: String?) {
+                 Log.e(TAG, "setRemoteDescription(answer) failed: $reason")
+                 connectionStatus = ConnectionStatus.ERROR
+                 callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+             }
         }, sdp)
     }
 
@@ -321,7 +415,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (parts.size >= 3) {
             val mid = parts[0]
             val index = parts[1].toInt()
-            val sdp = parts[2].replace("|", "\n")
+            val sdp = normalizeSignaledSdp(parts[2])
             webRtcClient.addIceCandidate(IceCandidate(mid, index, sdp))
         }
     }
@@ -362,7 +456,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "Audio pipeline heartbeat: frames=$totalFramesReceived, " +
                     "bufferedBytes=${audioBuffer.size}, bufferedMs=$bufferedAudioDurationMs, " +
                     "silenceMs=$consecutiveSilenceDurationMs, tripActive=$isTripActive, " +
-                    "mode=$currentMode, whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}, " +
+                    "mode=$currentMode, sttEngine=$sttEngine, " +
+                    "whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}, " +
                     "transmitting=$isTransmitting"
             )
         }
@@ -384,9 +479,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             }
         }
 
-        // 2. Handle Transcription Recording
-        // We accumulate audio if trip is active and flush after sustained silence.
-        if (isTripActive) {
+        // 2. Handle Transcription Recording (chunked mode only for Whisper).
+        if (isTripActive && sttEngine == SttEngine.WHISPER) {
             var flushReason: String? = null
             synchronized(transcriptionStateLock) {
                 audioBuffer.addAll(currentData.toList())
@@ -561,7 +655,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             TAG,
             "Dispatching chunk #$chunkId to STT. bytes=${chunk.size}, durationMs=$chunkDurationMs, " +
                 "silenceMs=$silenceMs, hadSpeech=$hadSpeech, reason=$reason, " +
-                "whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}"
+                "sttEngine=$sttEngine, whisper=${speechRecognizerHelper?.isUsingWhisper ?: false}"
         )
 
         val recognizer = speechRecognizerHelper
@@ -606,12 +700,20 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
     }
 
+    private fun normalizeSignaledSdp(raw: String): String {
+        return if (raw.contains("|")) raw.replace("|", "\n") else raw
+    }
+
+    private fun encodeSignalPayload(raw: String): String {
+        return Base64.encodeToString(raw.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+
     private fun getOrCreateSpeechRecognizerHelper(): SpeechRecognizerHelper {
         val current = speechRecognizerHelper
         if (current != null) {
             return current
         }
-        return SpeechRecognizerHelper(this, this).also { created ->
+        return SpeechRecognizerHelper(this, this, whisperModelId, sttEngine).also { created ->
             speechRecognizerHelper = created
         }
     }

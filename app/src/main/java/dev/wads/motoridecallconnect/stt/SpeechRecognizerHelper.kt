@@ -1,8 +1,11 @@
 package dev.wads.motoridecallconnect.stt
 
-import android.content.Context
-import android.content.Intent
+import android.media.AudioFormat
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -10,26 +13,50 @@ import android.util.Log
 import android.widget.Toast
 import java.io.File
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.content.Context
+import android.content.Intent
 
-class SpeechRecognizerHelper(private val context: Context, private val listener: SpeechRecognitionListener) {
+class SpeechRecognizerHelper(
+    private val context: Context,
+    private val listener: SpeechRecognitionListener,
+    initialModelId: String = WhisperModelCatalog.defaultOption.id,
+    initialEngine: SttEngine = SttEngine.WHISPER
+) {
 
     companion object {
         private const val TAG = "SpeechRecognizerHelper"
         private const val CAPTURE_SAMPLE_RATE_HZ = 48_000
         private const val WHISPER_SAMPLE_RATE_HZ = 16_000
         private const val MIN_WHISPER_SAMPLES = 16_000 // 1 second at 16 kHz
-        // Keep this easy to change during field tests.
-        private const val WHISPER_MODEL_NAME = "ggml-tiny.bin"
-        private const val WHISPER_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin?download=true"
+        private const val MIN_SYSTEM_SAMPLES = 24_000 // 0.5 second at 48 kHz
+        private const val SYSTEM_STT_TIMEOUT_SECONDS = 18L
+
+        private const val EXTRA_AUDIO_SOURCE = "android.speech.extra.AUDIO_SOURCE"
+        private const val EXTRA_AUDIO_SOURCE_CHANNEL_COUNT = "android.speech.extra.AUDIO_SOURCE_CHANNEL_COUNT"
+        private const val EXTRA_AUDIO_SOURCE_ENCODING = "android.speech.extra.AUDIO_SOURCE_ENCODING"
+        private const val EXTRA_AUDIO_SOURCE_SAMPLING_RATE = "android.speech.extra.AUDIO_SOURCE_SAMPLING_RATE"
     }
 
-    private var speechRecognizer: SpeechRecognizer? = null
     private val whisperLib = WhisperLib(context)
+    private val whisperLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var selectedModel: WhisperModelOption =
+        WhisperModelCatalog.findById(initialModelId) ?: WhisperModelCatalog.defaultOption
+    private var selectedEngine: SttEngine = initialEngine
+
     var isUsingWhisper = false
         private set
+
+    private var isListening = false
+    private var isDestroyed = false
     private var whisperChunkCount = 0L
+    private var systemChunkCount = 0L
     private var emptyWhisperResultCount = 0L
 
     interface SpeechRecognitionListener {
@@ -41,81 +68,136 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         fun onModelDownloadFinished(success: Boolean) {}
     }
 
-    private val modelFile = File(context.filesDir, WHISPER_MODEL_NAME)
-    private val modelUrl = WHISPER_MODEL_URL
+    private val modelFile: File
+        get() = File(context.filesDir, selectedModel.fileName)
     private val downsampleFactor = CAPTURE_SAMPLE_RATE_HZ / WHISPER_SAMPLE_RATE_HZ
 
     init {
         Log.i(
             TAG,
-            "SpeechRecognizerHelper ready. model=$WHISPER_MODEL_NAME, " +
-                "lazyInitDuringTrip=true"
+            "SpeechRecognizerHelper ready. engine=$selectedEngine, model=${selectedModel.id}, " +
+                "file=${selectedModel.fileName}, lazyInitDuringTrip=true"
         )
     }
 
-    private fun checkAndInitWhisper() {
-        if (modelFile.exists()) {
-            val modelSizeMb = modelFile.length().toDouble() / (1024.0 * 1024.0)
+    fun setEngine(engine: SttEngine) {
+        if (selectedEngine == engine) {
+            return
+        }
+        val previous = selectedEngine
+        selectedEngine = engine
+
+        synchronized(whisperLock) {
+            if (isUsingWhisper) {
+                whisperLib.free()
+                isUsingWhisper = false
+            }
+        }
+
+        Log.i(TAG, "STT engine changed from $previous to $selectedEngine")
+    }
+
+    fun setWhisperModel(modelId: String) {
+        val newModel = WhisperModelCatalog.findById(modelId)
+        if (newModel == null) {
+            Log.w(TAG, "Ignoring unknown model id: $modelId")
+            return
+        }
+        if (newModel.id == selectedModel.id) {
+            return
+        }
+
+        val previousModel = selectedModel
+        synchronized(whisperLock) {
+            if (isUsingWhisper) {
+                whisperLib.free()
+                isUsingWhisper = false
+            }
+        }
+
+        selectedModel = newModel
+        whisperChunkCount = 0L
+        systemChunkCount = 0L
+        emptyWhisperResultCount = 0L
+        Log.i(
+            TAG,
+            "Whisper model changed from ${previousModel.id} to ${selectedModel.id}. " +
+                "file=${selectedModel.fileName}"
+        )
+    }
+
+    private fun checkAndInitWhisper(): Boolean {
+        val currentModel = selectedModel
+        val currentModelFile = modelFile
+        if (!currentModelFile.exists()) {
+            Log.w(
+                TAG,
+                "Whisper model not found for selected engine. " +
+                    "model=${currentModel.id}, file=${currentModelFile.absolutePath}"
+            )
+            return false
+        }
+
+        synchronized(whisperLock) {
+            if (isDestroyed) {
+                return false
+            }
+            if (isUsingWhisper) {
+                return true
+            }
+
+            val modelSizeMb = currentModelFile.length().toDouble() / (1024.0 * 1024.0)
             Log.i(
                 TAG,
-                "Model found at: ${modelFile.absolutePath} " +
+                "Initializing Whisper with model=${currentModel.id}, path=${currentModelFile.absolutePath}, " +
                     "sizeMb=${"%.2f".format(modelSizeMb)}"
             )
+
             try {
-                if (whisperLib.initialize(modelFile.absolutePath)) {
-                    isUsingWhisper = true
-                    Log.i(TAG, "Whisper initialized successfully with model=$WHISPER_MODEL_NAME.")
+                val initialized = whisperLib.initialize(currentModelFile.absolutePath)
+                isUsingWhisper = initialized
+                if (initialized) {
+                    Log.i(TAG, "Whisper initialized successfully with model=${currentModel.id}.")
                 } else {
-                    isUsingWhisper = false
                     Log.e(TAG, "Failed to initialize Whisper engine logic.")
-                    setupSystemRecognizer()
                 }
+                return initialized
             } catch (e: Throwable) {
                 isUsingWhisper = false
                 Log.e(TAG, "Failed to initialize Whisper", e)
                 Toast.makeText(context, "Erro ao inicializar Whisper: ${e.message}", Toast.LENGTH_LONG).show()
-                setupSystemRecognizer()
+                return false
             }
-        } else {
-            isUsingWhisper = false
-            Log.w(TAG, "Whisper model not found. System STT will be used until model is downloaded.")
-            setupSystemRecognizer()
-        }
-    }
-
-    private fun setupSystemRecognizer() {
-        if (speechRecognizer != null) {
-            return
-        }
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-            speechRecognizer?.setRecognitionListener(createRecognitionListener())
-            Log.i(TAG, "System SpeechRecognizer initialized.")
-        } else {
-            listener.onError("Speech recognition not available.")
-            Log.e(TAG, "Speech recognition not available on this device.")
         }
     }
 
     suspend fun downloadModelIfNeeded() = withContext(Dispatchers.IO) {
-        if (modelFile.exists()) return@withContext
+        if (selectedEngine != SttEngine.WHISPER) {
+            Log.d(TAG, "Skipping Whisper model download because engine=$selectedEngine")
+            return@withContext
+        }
+
+        val targetModel = selectedModel
+        val targetModelFile = File(context.filesDir, targetModel.fileName)
+        val targetModelUrl = targetModel.downloadUrl
+        if (targetModelFile.exists()) return@withContext
 
         try {
             listener.onModelDownloadStarted()
-            Log.i(TAG, "Starting model download...")
-            
-            val url = URL(modelUrl)
+            Log.i(TAG, "Starting model download... model=${targetModel.id}")
+
+            val url = URL(targetModelUrl)
             val connection = url.openConnection()
             connection.connect()
-            
+
             val fileLength = connection.contentLength
             val input = connection.getInputStream()
-            val output = modelFile.outputStream()
-            
+            val output = targetModelFile.outputStream()
+
             val data = ByteArray(8192)
             var total: Long = 0
             var count: Int
-            
+
             while (input.read(data).also { count = it } != -1) {
                 total += count.toLong()
                 if (fileLength > 0) {
@@ -124,18 +206,18 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
                 }
                 output.write(data, 0, count)
             }
-            
+
             output.flush()
             output.close()
             input.close()
-            
-            Log.i(TAG, "Model download finished.")
+
+            Log.i(TAG, "Model download finished. model=${targetModel.id}")
             withContext(Dispatchers.Main) {
                 listener.onModelDownloadFinished(true)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Model download failed", e)
-            if (modelFile.exists()) modelFile.delete()
+            if (targetModelFile.exists()) targetModelFile.delete()
             withContext(Dispatchers.Main) {
                 listener.onModelDownloadFinished(false)
             }
@@ -143,39 +225,39 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     }
 
     fun startListening() {
-        if (!isUsingWhisper && modelFile.exists()) {
-            checkAndInitWhisper()
+        isListening = true
+
+        if (selectedEngine == SttEngine.WHISPER) {
+            val whisperReady = checkAndInitWhisper()
+            if (whisperReady) {
+                Log.i(TAG, "Using Whisper mode (${selectedModel.id}). Waiting for PCM chunks from AudioService.")
+                return
+            }
+
+            Log.w(
+                TAG,
+                "Whisper unavailable for model=${selectedModel.id}. Falling back to Android native STT chunk mode."
+            )
         }
 
-        if (isUsingWhisper) {
-             Log.i(TAG, "Using Whisper mode. Waiting for PCM chunks from AudioService.")
-             return
-        }
-        Log.i(TAG, "Using Android system SpeechRecognizer mode.")
-        setupSystemRecognizer()
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-        }
-        speechRecognizer?.startListening(intent)
-        Log.d(TAG, "Started listening...")
+        Log.i(TAG, "Using Android native SpeechRecognizer chunk mode. engine=$selectedEngine")
     }
 
     fun stopListening() {
-        if (isUsingWhisper) {
-            whisperLib.free()
-            isUsingWhisper = false
-            Log.i(TAG, "Whisper context released (trip ended).")
-        } else {
-            speechRecognizer?.stopListening()
+        isListening = false
+        synchronized(whisperLock) {
+            if (isUsingWhisper) {
+                whisperLib.free()
+                isUsingWhisper = false
+                Log.i(TAG, "Whisper context released.")
+            }
         }
         Log.d(TAG, "Stopped listening.")
     }
 
     fun processAudio(data: ByteArray) {
-        if (!isUsingWhisper) {
-            Log.v(TAG, "Ignoring audio chunk because Whisper mode is disabled.")
+        if (!isListening) {
+            Log.v(TAG, "Ignoring audio chunk because helper is not listening.")
             return
         }
 
@@ -184,6 +266,16 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
             return
         }
 
+        val shouldUseWhisper = selectedEngine == SttEngine.WHISPER && isUsingWhisper
+        if (shouldUseWhisper) {
+            processWhisperChunk(data)
+            return
+        }
+
+        processNativeChunk(data)
+    }
+
+    private fun processWhisperChunk(data: ByteArray) {
         val sampleCount48k = data.size / 2
         val pcm48k = FloatArray(sampleCount48k)
         var peak = 0f
@@ -209,8 +301,19 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
 
         whisperChunkCount++
         val startMs = System.currentTimeMillis()
-        val result = whisperLib.transcribeBuffer(pcm16k)
+        val result = synchronized(whisperLock) {
+            if (!isUsingWhisper || isDestroyed || !isListening) {
+                null
+            } else {
+                whisperLib.transcribeBuffer(pcm16k)
+            }
+        }
         val elapsedMs = System.currentTimeMillis() - startMs
+
+        if (result == null) {
+            Log.d(TAG, "Skipping Whisper chunk because context is unavailable.")
+            return
+        }
 
         if (result.startsWith("Error:", ignoreCase = true)) {
             Log.e(
@@ -242,6 +345,206 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
         listener.onFinalResults(result)
     }
 
+    private fun processNativeChunk(data: ByteArray) {
+        val sampleCount = data.size / 2
+        if (sampleCount < MIN_SYSTEM_SAMPLES) {
+            Log.d(
+                TAG,
+                "Skipping tiny native chunk. bytes=${data.size}, samples48k=$sampleCount, " +
+                    "required=$MIN_SYSTEM_SAMPLES"
+            )
+            return
+        }
+
+        systemChunkCount++
+        val chunkId = systemChunkCount
+        val startMs = System.currentTimeMillis()
+        val result = transcribeNativeChunk(data)
+        val elapsedMs = System.currentTimeMillis() - startMs
+
+        if (result.error != null) {
+            Log.e(TAG, "Native STT chunk #$chunkId failed in ${elapsedMs}ms: ${result.error}")
+            listener.onError(result.error)
+            return
+        }
+
+        val text = result.text.orEmpty().trim()
+        if (text.isBlank()) {
+            Log.d(TAG, "Native STT chunk #$chunkId produced empty text. elapsedMs=$elapsedMs")
+            return
+        }
+
+        Log.i(
+            TAG,
+            "Native STT chunk #$chunkId textLen=${text.length}, elapsedMs=$elapsedMs, preview=${text.take(120)}"
+        )
+        listener.onFinalResults(text)
+    }
+
+    private fun transcribeNativeChunk(data: ByteArray): ChunkTranscriptionResult {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            return ChunkTranscriptionResult(error = "Speech recognition not available on this device.")
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return ChunkTranscriptionResult(
+                error = "Native chunk STT requires Android 13+ for injected PCM audio source."
+            )
+        }
+
+        val startLatch = CountDownLatch(1)
+        val resultLatch = CountDownLatch(1)
+        val textRef = AtomicReference<String?>(null)
+        val errorRef = AtomicReference<String?>(null)
+
+        var recognizer: SpeechRecognizer? = null
+        var readPipe: ParcelFileDescriptor? = null
+        var writePipe: ParcelFileDescriptor? = null
+
+        mainHandler.post {
+            try {
+                recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+
+                val pipe = ParcelFileDescriptor.createPipe()
+                readPipe = pipe[0]
+                writePipe = pipe[1]
+
+                recognizer?.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+
+                    override fun onError(error: Int) {
+                        val errorMessage = mapSpeechRecognizerError(error)
+                        errorRef.compareAndSet(null, errorMessage)
+                        resultLatch.countDown()
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val text = results
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                        textRef.compareAndSet(null, text)
+                        resultLatch.countDown()
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        partialResults
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            ?.let { partial ->
+                                if (partial.isNotBlank()) {
+                                    listener.onPartialResults(partial)
+                                }
+                            }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                    putExtra(EXTRA_AUDIO_SOURCE, readPipe)
+                    putExtra(EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+                    putExtra(EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                    putExtra(EXTRA_AUDIO_SOURCE_SAMPLING_RATE, CAPTURE_SAMPLE_RATE_HZ)
+                }
+
+                recognizer?.startListening(intent)
+            } catch (t: Throwable) {
+                errorRef.compareAndSet(null, "Native chunk recognizer setup failed: ${t.message}")
+                resultLatch.countDown()
+            } finally {
+                startLatch.countDown()
+            }
+        }
+
+        if (!startLatch.await(2, TimeUnit.SECONDS)) {
+            return ChunkTranscriptionResult(error = "Native chunk recognizer setup timeout.")
+        }
+
+        val writer = writePipe
+        if (writer == null) {
+            cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            return ChunkTranscriptionResult(
+                error = errorRef.get() ?: "Native chunk recognizer did not create audio pipe."
+            )
+        }
+
+        try {
+            ParcelFileDescriptor.AutoCloseOutputStream(writer).use { output ->
+                output.write(data)
+                output.flush()
+            }
+        } catch (t: Throwable) {
+            cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            return ChunkTranscriptionResult(error = "Failed to stream PCM chunk to native recognizer: ${t.message}")
+        }
+
+        if (!resultLatch.await(SYSTEM_STT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            return ChunkTranscriptionResult(error = "Native chunk recognition timeout.")
+        }
+
+        cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+
+        return ChunkTranscriptionResult(
+            text = textRef.get(),
+            error = errorRef.get()
+        )
+    }
+
+    private fun cleanupNativeRecognizer(
+        recognizer: SpeechRecognizer?,
+        readPipe: ParcelFileDescriptor?,
+        writePipe: ParcelFileDescriptor?
+    ) {
+        val latch = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                recognizer?.cancel()
+            } catch (_: Throwable) {
+            }
+            try {
+                recognizer?.destroy()
+            } catch (_: Throwable) {
+            }
+            try {
+                readPipe?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                writePipe?.close()
+            } catch (_: Throwable) {
+            }
+            latch.countDown()
+        }
+        latch.await(1, TimeUnit.SECONDS)
+    }
+
+    private fun mapSpeechRecognizerError(error: Int): String {
+        return when (error) {
+            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+            SpeechRecognizer.ERROR_CLIENT -> "Speech recognizer client error"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Language not supported"
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Language unavailable"
+            SpeechRecognizer.ERROR_NETWORK -> "Network error"
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+            SpeechRecognizer.ERROR_NO_MATCH -> "No match"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
+            SpeechRecognizer.ERROR_SERVER -> "Recognizer server error"
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Recognizer server disconnected"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
+            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Too many requests"
+            else -> "Unknown recognizer error"
+        }
+    }
+
     private fun downsampleToWhisperRate(input: FloatArray): FloatArray {
         if (input.isEmpty() || downsampleFactor <= 1) {
             return input
@@ -266,46 +569,17 @@ class SpeechRecognizerHelper(private val context: Context, private val listener:
     }
 
     fun destroy() {
-        speechRecognizer?.destroy()
-        whisperLib.free()
+        isListening = false
+        isDestroyed = true
+        synchronized(whisperLock) {
+            whisperLib.free()
+            isUsingWhisper = false
+        }
         Log.i(TAG, "SpeechRecognizerHelper destroyed.")
     }
 
-    private fun createRecognitionListener(): RecognitionListener {
-        return object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-
-            override fun onError(error: Int) {
-                val errorMessage = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No match"
-                    else -> "An unknown error occurred"
-                }
-                listener.onError(errorMessage)
-                Log.e(TAG, "onError: $errorMessage")
-            }
-
-            override fun onResults(results: Bundle?) {
-                results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.get(0)?.let {
-                    Log.d(TAG, "System recognizer final result len=${it.length}")
-                    listener.onFinalResults(it)
-                }
-            }
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.get(0)?.let {
-                    Log.v(TAG, "System recognizer partial result len=${it.length}")
-                    listener.onPartialResults(it)
-                }
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        }
-    }
+    private data class ChunkTranscriptionResult(
+        val text: String? = null,
+        val error: String? = null
+    )
 }

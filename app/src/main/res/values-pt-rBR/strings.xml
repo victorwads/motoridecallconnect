@@ -36,6 +36,7 @@
     <string name="connect_and_start_trip">Conectar e iniciar viagem</string>
     <string name="connecting">Conectando...</string>
     <string name="connected">Conectado!</string>
+    <string name="connection_failed">Falha ao conectar. Verifique os dois dispositivos e tente novamente.</string>
     <string name="pairing_code_title">Pareamento por código</string>
     <string name="pairing_code_instructions">Digite o código que aparece na tela do outro dispositivo.</string>
     <string name="pairing_code_label">Código de pareamento</string>
@@ -57,6 +58,12 @@
     <string name="start_command_label">Comando para Iniciar</string>
     <string name="stop_command_label">Comando para Parar</string>
     <string name="record_transcript_label">Gravar Transcrição</string>
+    <string name="stt_engine_header">Engine de Transcrição</string>
+    <string name="stt_engine_hint">Escolha o backend de transcrição usado durante a gravação da trip.</string>
+    <string name="stt_engine_whisper">Whisper (modelo local)</string>
+    <string name="stt_engine_native">Reconhecimento nativo do Android</string>
+    <string name="whisper_model_header">Modelo Whisper</string>
+    <string name="whisper_model_hint">Escolha qualidade e quantizacao. Modelos maiores exigem mais armazenamento e RAM.</string>
     <string name="transcript_partial_prefix">Parcial: </string>
 
     <string name="status_connected">Conectado</string>
@@ -86,6 +93,8 @@
     <string name="filter_without_transcript">Sem transcrição</string>
     <string name="no_trips_title">Nenhuma viagem</string>
     <string name="no_trips_desc">Suas viagens aparecerão aqui após serem finalizadas.</string>
+    <string name="no_filtered_trips_title">Nenhuma viagem encontrada</string>
+    <string name="no_filtered_trips_desc">Tente ajustar os filtros.</string>
 
     <!-- Trip Details -->
     <string name="summary_title">Resumo</string>
@@ -96,6 +105,9 @@
     <string name="unknown_device">Desconhecido</string>
     <string name="mode_automatic">Automático</string>
     <string name="full_transcript_title">Transcrição completa</string>
+    <string name="no_transcript_records">Sem registros de transcrição.</string>
+    <string name="delete_trip">Apagar viagem</string>
+    <string name="trip_not_found">Viagem não encontrada.</string>
 
     <string name="audio_test_title">Teste de áudio</string>
     <string name="mic_active_label">Microfone ativo:</string>

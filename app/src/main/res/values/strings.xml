@@ -52,6 +52,7 @@
     <string name="connect_and_start_trip">Connect and start trip</string>
     <string name="connecting">Connecting...</string>
     <string name="connected">Connected!</string>
+    <string name="connection_failed">Connection failed. Check both devices and try again.</string>
     <string name="pairing_code_title">Code Pairing</string>
     <string name="pairing_code_instructions">Enter the code displayed on the other device screen.</string>
     <string name="pairing_code_label">Pairing code</string>
@@ -73,6 +74,12 @@
     <string name="start_command_label">Start Command</string>
     <string name="stop_command_label">Stop Command</string>
     <string name="record_transcript_label">Record Transcript</string>
+    <string name="stt_engine_header">Speech Engine</string>
+    <string name="stt_engine_hint">Choose the transcription backend used during trip recording.</string>
+    <string name="stt_engine_whisper">Whisper (local model)</string>
+    <string name="stt_engine_native">Android native recognition</string>
+    <string name="whisper_model_header">Whisper Model</string>
+    <string name="whisper_model_hint">Choose quality and quantization. Bigger models need more storage and RAM.</string>
     <string name="transcript_partial_prefix">Partial: </string>
     
     <string name="status_connected">Connected</string>
@@ -102,6 +109,8 @@
     <string name="filter_without_transcript">Without transcript</string>
     <string name="no_trips_title">No trips</string>
     <string name="no_trips_desc">Your trips will appear here after they end.</string>
+    <string name="no_filtered_trips_title">No matching trips</string>
+    <string name="no_filtered_trips_desc">Try changing your filters.</string>
 
     <!-- Trip Details -->
     <string name="summary_title">Summary</string>
@@ -112,6 +121,9 @@
     <string name="unknown_device">Unknown</string>
     <string name="mode_automatic">Automatic</string>
     <string name="full_transcript_title">Full Transcript</string>
+    <string name="no_transcript_records">No transcript records.</string>
+    <string name="delete_trip">Delete trip</string>
+    <string name="trip_not_found">Trip not found.</string>
 
     <string name="audio_test_title">Audio Test</string>
     <string name="mic_active_label">Active Microphone:</string>

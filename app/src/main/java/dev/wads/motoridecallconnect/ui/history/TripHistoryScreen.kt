@@ -13,13 +13,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForwardIos
-import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Schedule
@@ -27,6 +26,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,17 +47,24 @@ import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.ui.components.EmptyState
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
 @Composable
 fun TripHistoryScreen(
     uiState: TripHistoryUiState,
-    onTripClick: (String) -> Unit
+    onTripClick: (String) -> Unit,
+    onDeleteTrip: (String) -> Unit
 ) {
-    // Local filter state
     var periodFilter by remember { mutableStateOf("all") }
     var transcriptFilter by remember { mutableStateOf("all") }
+
+    val filteredTrips = uiState.trips.filter { trip ->
+        val hasTranscript = uiState.transcriptAvailability[trip.id] == true
+        matchesPeriodFilter(trip.startTime, periodFilter) &&
+            matchesTranscriptFilter(hasTranscript, transcriptFilter)
+    }
 
     Column(
         modifier = Modifier
@@ -71,19 +78,33 @@ fun TripHistoryScreen(
             modifier = Modifier.padding(bottom = 16.dp)
         )
 
-        // Filters
         Column(modifier = Modifier.padding(bottom = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
-                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Gray)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(bottom = 8.dp)
+            ) {
+                Icon(
+                    Icons.Default.FilterList,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = Color.Gray
+                )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(stringResource(R.string.period_label), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(
+                    stringResource(R.string.period_label),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 12.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 12.dp)
+            ) {
                 FilterButton(stringResource(R.string.filter_all), periodFilter == "all") { periodFilter = "all" }
                 FilterButton(stringResource(R.string.filter_today), periodFilter == "today") { periodFilter = "today" }
                 FilterButton(stringResource(R.string.filter_7days), periodFilter == "7days") { periodFilter = "7days" }
             }
-            
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterButton(stringResource(R.string.filter_all), transcriptFilter == "all") { transcriptFilter = "all" }
                 FilterButton(stringResource(R.string.filter_with_transcript), transcriptFilter == "with") { transcriptFilter = "with" }
@@ -101,14 +122,22 @@ fun TripHistoryScreen(
                 title = stringResource(R.string.no_trips_title),
                 description = stringResource(R.string.no_trips_desc)
             )
+        } else if (filteredTrips.isEmpty()) {
+            EmptyState(
+                icon = Icons.Default.FilterList,
+                title = stringResource(R.string.no_filtered_trips_title),
+                description = stringResource(R.string.no_filtered_trips_desc)
+            )
         } else {
-            // Apply filters (mock implementation using simplistic conditions as Date parsing is needed)
-            // Real implementation would parse trip.startTime
-            val filteredTrips = uiState.trips // TODO: Implement real filtering logic
-            
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(filteredTrips) { trip ->
-                    TripItem(trip = trip, onClick = { onTripClick(trip.id) })
+                items(items = filteredTrips, key = { trip -> trip.id }) { trip ->
+                    TripItem(
+                        trip = trip,
+                        hasTranscript = uiState.transcriptAvailability[trip.id] == true,
+                        isDeleting = uiState.deletingTripIds.contains(trip.id),
+                        onClick = { onTripClick(trip.id) },
+                        onDeleteClick = { onDeleteTrip(trip.id) }
+                    )
                 }
             }
         }
@@ -116,11 +145,13 @@ fun TripHistoryScreen(
 }
 
 @Composable
-fun FilterButton(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun FilterButton(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
@@ -128,13 +159,23 @@ fun FilterButton(label: String, selected: Boolean, onClick: () -> Unit) {
             text = label,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (selected) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
     }
 }
 
 @Composable
-fun TripItem(trip: Trip, onClick: () -> Unit) {
+private fun TripItem(
+    trip: Trip,
+    hasTranscript: Boolean,
+    isDeleting: Boolean,
+    onClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -149,7 +190,10 @@ fun TripItem(trip: Trip, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                ) {
                     Text(
                         text = formatDate(trip.startTime),
                         fontWeight = FontWeight.SemiBold,
@@ -158,7 +202,10 @@ fun TripItem(trip: Trip, onClick: () -> Unit) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
-                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                            .background(
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                                RoundedCornerShape(4.dp)
+                            )
                             .padding(horizontal = 4.dp, vertical = 2.dp)
                     ) {
                         Text(
@@ -186,18 +233,39 @@ fun TripItem(trip: Trip, onClick: () -> Unit) {
                     )
                 }
             }
-            
+
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Icons if has transcription
+                if (hasTranscript) {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+                IconButton(
+                    onClick = onDeleteClick,
+                    enabled = !isDeleting,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    if (isDeleting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = stringResource(R.string.delete_trip),
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(4.dp))
                 Icon(
-                    imageVector = Icons.Default.Description, 
-                    contentDescription = null, 
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(
-                    imageVector = Icons.Default.ArrowForwardIos,
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp)
@@ -205,6 +273,32 @@ fun TripItem(trip: Trip, onClick: () -> Unit) {
             }
         }
     }
+}
+
+private fun matchesPeriodFilter(startTime: Long, periodFilter: String): Boolean {
+    val now = System.currentTimeMillis()
+    return when (periodFilter) {
+        "today" -> startTime >= startOfTodayMillis() && startTime <= now
+        "7days" -> startTime >= now - SEVEN_DAYS_MILLIS
+        else -> true
+    }
+}
+
+private fun matchesTranscriptFilter(hasTranscript: Boolean, transcriptFilter: String): Boolean {
+    return when (transcriptFilter) {
+        "with" -> hasTranscript
+        "without" -> !hasTranscript
+        else -> true
+    }
+}
+
+private fun startOfTodayMillis(): Long {
+    val calendar = Calendar.getInstance()
+    calendar.set(Calendar.HOUR_OF_DAY, 0)
+    calendar.set(Calendar.MINUTE, 0)
+    calendar.set(Calendar.SECOND, 0)
+    calendar.set(Calendar.MILLISECOND, 0)
+    return calendar.timeInMillis
 }
 
 private fun formatDate(timestamp: Long): String {
@@ -218,10 +312,12 @@ private fun formatDuration(durationMillis: Long?): String {
     val minutes = seconds / 60
     val hours = minutes / 60
     if (hours > 0) {
-         return String.format("%dh %02dm", hours, minutes % 60)
+        return String.format("%dh %02dm", hours, minutes % 60)
     }
     return String.format("%02dm %02ds", minutes, seconds % 60)
 }
+
+private const val SEVEN_DAYS_MILLIS = 7L * 24L * 60L * 60L * 1000L
 
 @androidx.compose.ui.tooling.preview.Preview
 @Composable
@@ -231,11 +327,25 @@ private fun TripHistoryScreenPreview() {
             TripHistoryScreen(
                 uiState = TripHistoryUiState(
                     trips = listOf(
-                        dev.wads.motoridecallconnect.data.model.Trip("1", System.currentTimeMillis(), System.currentTimeMillis() + 3600000, 3600000, "Galaxy S23"),
-                        dev.wads.motoridecallconnect.data.model.Trip("2", System.currentTimeMillis() - 86400000, System.currentTimeMillis() - 82800000, 3600000, "iPhone 15")
-                    )
+                        Trip(
+                            id = "1",
+                            startTime = System.currentTimeMillis(),
+                            endTime = System.currentTimeMillis() + 3600000,
+                            duration = 3600000,
+                            peerDevice = "Galaxy S23"
+                        ),
+                        Trip(
+                            id = "2",
+                            startTime = System.currentTimeMillis() - 86400000,
+                            endTime = System.currentTimeMillis() - 82800000,
+                            duration = 3600000,
+                            peerDevice = "iPhone 15"
+                        )
+                    ),
+                    transcriptAvailability = mapOf("1" to true, "2" to false)
                 ),
-                onTripClick = {}
+                onTripClick = {},
+                onDeleteTrip = {}
             )
         }
     }
@@ -248,7 +358,8 @@ private fun TripHistoryEmptyPreview() {
         androidx.compose.material3.Surface {
             TripHistoryScreen(
                 uiState = TripHistoryUiState(trips = emptyList()),
-                onTripClick = {}
+                onTripClick = {},
+                onDeleteTrip = {}
             )
         }
     }

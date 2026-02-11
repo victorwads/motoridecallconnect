@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 settingsState.operatingMode,
                 settingsState.startCommand,
                 settingsState.stopCommand,
+                settingsState.sttEngine,
                 settingsState.whisperModelId,
                 tripState.isTripActive,
                 tripState.currentTripId
@@ -117,6 +118,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     settingsState.operatingMode,
                     settingsState.startCommand,
                     settingsState.stopCommand,
+                    settingsState.sttEngine,
                     settingsState.whisperModelId,
                     tripState.isTripActive,
                     tripState.currentTripId
@@ -125,6 +127,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         settingsState.operatingMode, 
                         settingsState.startCommand, 
                         settingsState.stopCommand,
+                        settingsState.sttEngine,
                         settingsState.whisperModelId,
                         tripState.isTripActive,
                         tripState.currentTripId
@@ -158,6 +161,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                                 settings.operatingMode,
                                 settings.startCommand,
                                 settings.stopCommand,
+                                settings.sttEngine,
+                                settings.whisperModelId,
                                 trip.isTripActive,
                                 trip.currentTripId
                             )

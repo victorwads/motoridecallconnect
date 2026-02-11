@@ -56,6 +56,8 @@ import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import dev.wads.motoridecallconnect.stt.SttEngine
+import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 
 @Composable
@@ -64,10 +66,14 @@ fun SettingsScreen(
     startCommand: String,
     stopCommand: String,
     isRecordingTranscript: Boolean,
+    sttEngine: SttEngine,
+    whisperModelId: String,
     onModeChange: (OperatingMode) -> Unit,
     onStartCommandChange: (String) -> Unit,
     onStopCommandChange: (String) -> Unit,
     onRecordingToggle: (Boolean) -> Unit,
+    onSttEngineChange: (SttEngine) -> Unit,
+    onWhisperModelChange: (String) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
@@ -151,6 +157,86 @@ fun SettingsScreen(
                     label = { Text(stringResource(R.string.stop_command_label)) },
                     modifier = Modifier.fillMaxWidth()
                 )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(stringResource(R.string.stt_engine_header), style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = stringResource(R.string.stt_engine_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+            )
+
+            SttEngine.entries.forEach { engine ->
+                val selected = sttEngine == engine
+                val labelRes = if (engine == SttEngine.WHISPER) {
+                    R.string.stt_engine_whisper
+                } else {
+                    R.string.stt_engine_native
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = selected,
+                            onClick = { onSttEngineChange(engine) }
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selected,
+                        onClick = { onSttEngineChange(engine) }
+                    )
+                    Text(
+                        text = stringResource(labelRes),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+
+            if (sttEngine == SttEngine.WHISPER) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(stringResource(R.string.whisper_model_header), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = stringResource(R.string.whisper_model_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                )
+
+                WhisperModelCatalog.options.forEach { model ->
+                    val selected = whisperModelId == model.id
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selected,
+                                onClick = { onWhisperModelChange(model.id) }
+                            )
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selected,
+                            onClick = { onWhisperModelChange(model.id) }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = model.displayName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                            Text(
+                                text = model.details,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
             
             Spacer(modifier = Modifier.height(16.dp))
@@ -269,10 +355,14 @@ private fun SettingsScreenPreview() {
                 startCommand = "iniciar",
                 stopCommand = "parar",
                 isRecordingTranscript = true,
+                sttEngine = SttEngine.WHISPER,
+                whisperModelId = WhisperModelCatalog.defaultOption.id,
                 onModeChange = {},
                 onStartCommandChange = {},
                 onStopCommandChange = {},
                 onRecordingToggle = {},
+                onSttEngineChange = {},
+                onWhisperModelChange = {},
                 onTestAudio = {},
                 onNavigateBack = {},
                 onLogout = {}

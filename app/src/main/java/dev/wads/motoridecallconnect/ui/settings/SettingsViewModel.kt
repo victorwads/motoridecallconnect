@@ -1,6 +1,8 @@
 package dev.wads.motoridecallconnect.ui.settings
 
 import androidx.lifecycle.ViewModel
+import dev.wads.motoridecallconnect.stt.SttEngine
+import dev.wads.motoridecallconnect.stt.WhisperModelCatalog
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,7 +13,9 @@ data class SettingsUiState(
     val operatingMode: OperatingMode = OperatingMode.VOICE_COMMAND,
     val startCommand: String = "iniciar",
     val stopCommand: String = "parar",
-    val isRecordingTranscript: Boolean = true
+    val isRecordingTranscript: Boolean = true,
+    val sttEngine: SttEngine = SttEngine.WHISPER,
+    val whisperModelId: String = WhisperModelCatalog.defaultOption.id
 )
 
 class SettingsViewModel : ViewModel() {
@@ -33,5 +37,16 @@ class SettingsViewModel : ViewModel() {
 
     fun onRecordingToggle(isRecording: Boolean) {
         _uiState.update { it.copy(isRecordingTranscript = isRecording) }
+    }
+
+    fun onSttEngineChange(engine: SttEngine) {
+        _uiState.update { it.copy(sttEngine = engine) }
+    }
+
+    fun onWhisperModelChange(modelId: String) {
+        if (WhisperModelCatalog.findById(modelId) == null) {
+            return
+        }
+        _uiState.update { it.copy(whisperModelId = modelId) }
     }
 }
