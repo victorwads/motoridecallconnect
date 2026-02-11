@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private val loginViewModel by viewModels<dev.wads.motoridecallconnect.ui.login.LoginViewModel> { viewModelFactory }
     private val socialViewModel by viewModels<dev.wads.motoridecallconnect.ui.social.SocialViewModel> { viewModelFactory }
     private val pairingViewModel by viewModels<dev.wads.motoridecallconnect.ui.pairing.PairingViewModel> { viewModelFactory }
+    private val settingsViewModel by viewModels<dev.wads.motoridecallconnect.ui.settings.SettingsViewModel>()
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
@@ -60,12 +61,14 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
             boundService.registerCallback(this@MainActivity)
             
             // Sync current state to newly connected service
-            val state = activeTripViewModel.uiState.value
+            val tripState = activeTripViewModel.uiState.value
+            val settingsState = settingsViewModel.uiState.value
             boundService.updateConfiguration(
-                state.operatingMode,
-                state.startCommand,
-                state.stopCommand,
-                state.isTripActive
+                settingsState.operatingMode,
+                settingsState.startCommand,
+                settingsState.stopCommand,
+                tripState.isTripActive,
+                tripState.currentTripId
             )
         }
 
@@ -97,16 +100,23 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
         setContent {
             MotoRideCallConnectTheme {
-                val uiState by activeTripViewModel.uiState.collectAsState()
+                val tripState by activeTripViewModel.uiState.collectAsState()
+                val settingsState by settingsViewModel.uiState.collectAsState()
                 val isHosting by pairingViewModel.isHosting.collectAsState()
 
-                LaunchedEffect(uiState.operatingMode, uiState.startCommand, uiState.stopCommand, uiState.isTripActive, uiState.currentTripId) {
+                LaunchedEffect(
+                    settingsState.operatingMode,
+                    settingsState.startCommand,
+                    settingsState.stopCommand,
+                    tripState.isTripActive,
+                    tripState.currentTripId
+                ) {
                     audioService?.updateConfiguration(
-                        uiState.operatingMode, 
-                        uiState.startCommand, 
-                        uiState.stopCommand,
-                        uiState.isTripActive,
-                        uiState.currentTripId
+                        settingsState.operatingMode, 
+                        settingsState.startCommand, 
+                        settingsState.stopCommand,
+                        tripState.isTripActive,
+                        tripState.currentTripId
                     )
                 }
 
@@ -123,6 +133,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     loginViewModel = loginViewModel,
                     socialViewModel = socialViewModel,
                     pairingViewModel = pairingViewModel,
+                    settingsViewModel = settingsViewModel,
                     onStartTripClick = { 
                         if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             startAndBindAudioService()

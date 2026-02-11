@@ -32,12 +32,12 @@ import dev.wads.motoridecallconnect.data.local.UserPreferences
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripScreen
 import dev.wads.motoridecallconnect.ui.activetrip.ActiveTripViewModel
-import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.ui.pairing.PairingViewModel
 import dev.wads.motoridecallconnect.ui.components.AudioTestModal
 import dev.wads.motoridecallconnect.ui.login.LoginScreen
 import dev.wads.motoridecallconnect.ui.login.LoginViewModel
 import com.google.firebase.auth.FirebaseAuth
+import dev.wads.motoridecallconnect.ui.settings.SettingsViewModel
 import kotlinx.coroutines.launch
 import dev.wads.motoridecallconnect.ui.history.TripDetailScreen
 import dev.wads.motoridecallconnect.ui.history.TripHistoryScreen
@@ -55,6 +55,7 @@ fun AppNavigation(
     loginViewModel: LoginViewModel,
     socialViewModel: dev.wads.motoridecallconnect.ui.social.SocialViewModel,
     pairingViewModel: PairingViewModel,
+    settingsViewModel: SettingsViewModel,
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onConnectToDevice: (Device) -> Unit,
@@ -173,16 +174,16 @@ fun AppNavigation(
                 )
             }
             composable(Screen.Settings.route) {
-                val uiState by activeTripViewModel.uiState.collectAsState()
+                val uiState by settingsViewModel.uiState.collectAsState()
                 SettingsScreen(
                     operatingMode = uiState.operatingMode,
                     startCommand = uiState.startCommand,
                     stopCommand = uiState.stopCommand,
                     isRecordingTranscript = uiState.isRecordingTranscript,
-                    onModeChange = { activeTripViewModel.onModeChange(it) },
-                    onStartCommandChange = { activeTripViewModel.onStartCommandChange(it) },
-                    onStopCommandChange = { activeTripViewModel.onStopCommandChange(it) },
-                    onRecordingToggle = { activeTripViewModel.onRecordingToggle(it) },
+                    onModeChange = { settingsViewModel.onModeChange(it) },
+                    onStartCommandChange = { settingsViewModel.onStartCommandChange(it) },
+                    onStopCommandChange = { settingsViewModel.onStopCommandChange(it) },
+                    onRecordingToggle = { settingsViewModel.onRecordingToggle(it) },
                     onNavigateBack = { navController.popBackStack() },
                     onTestAudio = { showAudioTest = true },
                     onLogout = {

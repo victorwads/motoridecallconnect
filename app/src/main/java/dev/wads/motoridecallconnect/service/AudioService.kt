@@ -30,6 +30,11 @@ import java.net.InetAddress
 
 class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, SpeechRecognizerHelper.SpeechRecognitionListener, SignalingClient.SignalingListener {
 
+    companion object {
+        private const val TAG = "AudioService"
+        private const val PIPELINE_LOG_INTERVAL_MS = 5_000L
+    }
+
     private val binder = LocalBinder()
     private val CHANNEL_ID = "AudioServiceChannel"
     private lateinit var audioCapturer: AudioCapturer
@@ -53,6 +58,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var connectionStatus = ConnectionStatus.DISCONNECTED
     private val audioBuffer = mutableListOf<Byte>()
     private var lastTransmissionTime = 0L
+    private var totalFramesReceived = 0L
+    private var totalChunksDispatched = 0L
 
     interface ServiceCallback {
         fun onTranscriptUpdate(transcript: String, isFinal: Boolean)
@@ -103,6 +110,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         speechRecognizerHelper = SpeechRecognizerHelper(this, this)
         signalingClient = SignalingClient(this)
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
+        Log.i(TAG, "Service created. WhisperAvailable=${speechRecognizerHelper.isUsingWhisper}")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,6 +125,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         speechRecognizerHelper.startListening()
         signalingClient.startServer(8080) 
+        Log.i(
+            TAG,
+            "Service started. Mode=$currentMode, TripActive=$isTripActive, Whisper=${speechRecognizerHelper.isUsingWhisper}"
+        )
         return START_STICKY
     }
 
@@ -167,9 +179,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (tripChanged) {
             val msg = if (isTripActive) "TRIP:START${if (tripId != null) ":$tripId" else ""}" else "TRIP:STOP"
             signalingClient.sendMessage(msg)
+            Log.i(TAG, "Trip status changed locally. isTripActive=$isTripActive, tripId=$tripId")
         }
 
-        Log.d("AudioService", "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
+        Log.d(TAG, "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, TripActive=$tripActive")
         
         if (currentMode == OperatingMode.CONTINUOUS_TRANSMISSION && !isTransmitting) {
             isTransmitting = true
@@ -253,14 +266,30 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onTripStatusReceived(active: Boolean, tripId: String?) {
-        Log.d("AudioService", "Trip status received: $active, id=$tripId")
+        Log.d(TAG, "Trip status received: $active, id=$tripId")
         isTripActive = active
         callback?.onTripStatusChanged(active, tripId)
     }
 
     // --- AudioCapturerListener Callbacks ---
     override fun onAudioData(data: ByteArray, size: Int) {
+        if (size <= 0) {
+            return
+        }
+
+        totalFramesReceived++
         val currentData = data.sliceArray(0 until size)
+        val now = System.currentTimeMillis()
+
+        if (now - lastTransmissionTime >= PIPELINE_LOG_INTERVAL_MS) {
+            lastTransmissionTime = now
+            Log.d(
+                TAG,
+                "Audio pipeline heartbeat: frames=$totalFramesReceived, " +
+                    "bufferedBytes=${audioBuffer.size}, tripActive=$isTripActive, " +
+                    "mode=$currentMode, whisper=${speechRecognizerHelper.isUsingWhisper}, transmitting=$isTransmitting"
+            )
+        }
         
         // 1. Handle Intercom Transmission (VAD Logic)
         if (currentMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
@@ -293,6 +322,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             }
 
             if (shouldProcess && audioBuffer.isNotEmpty()) {
+                totalChunksDispatched++
+                Log.d(
+                    TAG,
+                    "Dispatching chunk #$totalChunksDispatched to STT. bytes=${audioBuffer.size}, " +
+                        "isSilence=$isSilence, mode=$currentMode, whisper=${speechRecognizerHelper.isUsingWhisper}"
+                )
                 speechRecognizerHelper.processAudio(audioBuffer.toByteArray())
                 audioBuffer.clear()
             }
@@ -301,10 +336,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     // --- SpeechRecognitionListener Callbacks ---
     override fun onPartialResults(results: String) {
+        Log.v(TAG, "Partial transcript len=${results.length}")
         callback?.onTranscriptUpdate(results, false)
     }
 
     override fun onFinalResults(results: String) {
+        Log.i(TAG, "Final transcript len=${results.length}: $results")
         callback?.onTranscriptUpdate(results, true)
         if (currentMode == OperatingMode.VOICE_COMMAND) {
             handleVoiceCommand(results)
@@ -312,7 +349,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onModelDownloadStarted() {
-        Log.i("AudioService", "Model download started")
+        Log.i(TAG, "Model download started")
         callback?.onModelDownloadStateChanged(true)
     }
 
@@ -322,12 +359,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     override fun onModelDownloadFinished(success: Boolean) {
-        Log.i("AudioService", "Model download finished. Success: $success")
+        Log.i(TAG, "Model download finished. Success: $success. Whisper=${speechRecognizerHelper.isUsingWhisper}")
         callback?.onModelDownloadStateChanged(false, success)
     }
 
     override fun onError(error: String) {
-        Log.e("AudioService", "Speech Recognizer Error: $error")
+        Log.e(TAG, "Speech Recognizer Error: $error")
     }
 
     private fun handleVoiceCommand(command: String) {

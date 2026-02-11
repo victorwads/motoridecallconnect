@@ -8,13 +8,39 @@
 #include <cmath>
 
 #define TAG "AppNative"
+#define WHISPER_TAG "WhisperCpp"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
 static struct whisper_context *g_ctx = nullptr;
 
+static void whisper_android_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+    (void) user_data;
+    int prio = ANDROID_LOG_INFO;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR:
+            prio = ANDROID_LOG_ERROR;
+            break;
+        case GGML_LOG_LEVEL_WARN:
+            prio = ANDROID_LOG_WARN;
+            break;
+        case GGML_LOG_LEVEL_INFO:
+            prio = ANDROID_LOG_INFO;
+            break;
+        case GGML_LOG_LEVEL_DEBUG:
+            prio = ANDROID_LOG_DEBUG;
+            break;
+        default:
+            prio = ANDROID_LOG_INFO;
+            break;
+    }
+    __android_log_print(prio, WHISPER_TAG, "%s", text ? text : "");
+}
+
 extern "C" JNIEXPORT jlong JNICALL
-Java_dev_wads_motoridecallconnect_stt_WhisperEngine_init(
+Java_dev_wads_motoridecallconnect_stt_WhisperLib_initModel(
     JNIEnv *env,
     jobject /* this */,
     jstring modelPathStr) {
@@ -22,8 +48,21 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_init(
     const char *model_path = env->GetStringUTFChars(modelPathStr, nullptr);
     LOGD("Loading model from %s", model_path);
 
+    whisper_log_set(whisper_android_log_callback, nullptr);
+
     struct whisper_context_params cparams = whisper_context_default_params();
+    cparams.use_gpu = true;
+    cparams.gpu_device = 0;
+    cparams.flash_attn = true;
+
     g_ctx = whisper_init_from_file_with_params(model_path, cparams);
+
+    if (g_ctx == nullptr) {
+        LOGW("GPU backend init failed. Retrying with CPU backend.");
+        cparams.use_gpu = false;
+        cparams.flash_attn = false;
+        g_ctx = whisper_init_from_file_with_params(model_path, cparams);
+    }
 
     env->ReleaseStringUTFChars(modelPathStr, model_path);
 
@@ -32,7 +71,12 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_init(
         return 0;
     }
 
-    LOGD("Model loaded successfully");
+    const char * sysInfo = whisper_print_system_info();
+    if (sysInfo != nullptr) {
+        LOGI("Whisper system info: %s", sysInfo);
+    }
+
+    LOGI("Model loaded successfully.");
     return (jlong) g_ctx;
 }
 
@@ -88,7 +132,7 @@ std::vector<float> read_wav(const char* fname) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribe(
+Java_dev_wads_motoridecallconnect_stt_WhisperLib_transcribe(
     JNIEnv *env,
     jobject /* this */,
     jstring wavPathStr) {
@@ -106,6 +150,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribe(
     if (pcmf32.empty()) {
         return env->NewStringUTF("Error: Failed to read WAV or empty");
     }
+    LOGD("transcribe(file): sampleCount=%zu", pcmf32.size());
 
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_progress = false;
@@ -115,6 +160,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribe(
     }
 
     int n_segments = whisper_full_n_segments(g_ctx);
+    LOGD("transcribe(file): segments=%d", n_segments);
     std::string result = "";
     for (int i = 0; i < n_segments; ++i) {
         const char *text = whisper_full_get_segment_text(g_ctx, i);
@@ -125,7 +171,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribe(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribeBuffer(
+Java_dev_wads_motoridecallconnect_stt_WhisperLib_transcribeBuffer(
     JNIEnv *env,
     jobject /* this */,
     jfloatArray floatArray) {
@@ -137,6 +183,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribeBuffer(
     jsize len = env->GetArrayLength(floatArray);
     std::vector<float> pcmf32(len);
     env->GetFloatArrayRegion(floatArray, 0, len, pcmf32.data());
+    LOGD("transcribeBuffer: sampleCount=%d", (int) len);
 
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_progress = false;
@@ -146,6 +193,10 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribeBuffer(
     }
 
     int n_segments = whisper_full_n_segments(g_ctx);
+    LOGD("transcribeBuffer: segments=%d", n_segments);
+    if (n_segments == 0) {
+        LOGW("transcribeBuffer: no text segments returned for this chunk");
+    }
     std::string result = "";
     for (int i = 0; i < n_segments; ++i) {
         const char *text = whisper_full_get_segment_text(g_ctx, i);
@@ -156,7 +207,7 @@ Java_dev_wads_motoridecallconnect_stt_WhisperEngine_transcribeBuffer(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_dev_wads_motoridecallconnect_stt_WhisperEngine_free(
+Java_dev_wads_motoridecallconnect_stt_WhisperLib_free(
     JNIEnv *env,
     jobject /* this */) {
     if (g_ctx) {

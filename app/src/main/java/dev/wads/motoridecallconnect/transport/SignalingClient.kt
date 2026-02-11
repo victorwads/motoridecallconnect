@@ -39,6 +39,8 @@ class SignalingClient(private val listener: SignalingListener) {
                 clientSocket?.let { handleConnection(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting signaling server", e)
+            } finally {
+                close()
             }
         }
     }
@@ -55,6 +57,8 @@ class SignalingClient(private val listener: SignalingListener) {
                 clientSocket?.let { handleConnection(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "Error connecting to peer", e)
+            } finally {
+                close()
             }
         }
     }

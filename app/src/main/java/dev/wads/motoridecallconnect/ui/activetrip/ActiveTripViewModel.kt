@@ -1,6 +1,7 @@
 package dev.wads.motoridecallconnect.ui.activetrip
 
 import android.net.nsd.NsdServiceInfo
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.wads.motoridecallconnect.data.model.Device
@@ -30,10 +31,6 @@ enum class ConnectionStatus {
 
 data class ActiveTripUiState(
     val discoveredServices: List<NsdServiceInfo> = emptyList(),
-    val operatingMode: OperatingMode = OperatingMode.VOICE_COMMAND,
-    val startCommand: String = "iniciar",
-    val stopCommand: String = "parar",
-    val isRecordingTranscript: Boolean = true,
     val isTripActive: Boolean = false,
     val currentTripId: String? = null,
     val tripStartTime: Long? = null,
@@ -46,6 +43,9 @@ data class ActiveTripUiState(
 )
 
 class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() {
+    companion object {
+        private const val TAG = "ActiveTripViewModel"
+    }
 
     private val _uiState = MutableStateFlow(ActiveTripUiState())
     val uiState: StateFlow<ActiveTripUiState> = _uiState.asStateFlow()
@@ -132,22 +132,6 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         }
     }
 
-    fun onModeChange(mode: OperatingMode) {
-        _uiState.update { it.copy(operatingMode = mode) }
-    }
-
-    fun onStartCommandChange(command: String) {
-        _uiState.update { it.copy(startCommand = command) }
-    }
-
-    fun onStopCommandChange(command: String) {
-        _uiState.update { it.copy(stopCommand = command) }
-    }
-
-    fun onRecordingToggle(isRecording: Boolean) {
-        _uiState.update { it.copy(isRecordingTranscript = isRecording) }
-    }
-
     fun onConnectionStatusChanged(status: ConnectionStatus, peer: Device?) {
         _uiState.update { it.copy(connectionStatus = status, connectedPeer = peer) }
     }
@@ -173,16 +157,31 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
         if (isFinal) {
             val tripId = state.currentTripId ?: return
-            if (state.isRecordingTranscript) {
+
+            // Show immediately in UI; Firestore listener will later reconcile authoritative lines.
+            _uiState.update { s ->
+                val updated = s.transcript.toMutableList()
+                if (updated.isNotEmpty() && updated.last().startsWith("Parcial:")) {
+                    updated.removeAt(updated.lastIndex)
+                }
+                updated.add("Você: $newTranscript")
+                s.copy(transcript = updated)
+            }
+
+            if (true) { // TODO: Re-wire this to the settings view model
                 viewModelScope.launch {
-                    repository.insertTranscriptLine(
-                        TranscriptLine(
-                            tripId = tripId,
-                            text = newTranscript,
-                            isPartial = false
-                        ),
-                        targetHostUid = targetUid
-                    )
+                    try {
+                        repository.insertTranscriptLine(
+                            TranscriptLine(
+                                tripId = tripId,
+                                text = newTranscript,
+                                isPartial = false
+                            ),
+                            targetHostUid = targetUid
+                        )
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Failed to persist transcript line for tripId=$tripId", t)
+                    }
                 }
             }
         } else {
