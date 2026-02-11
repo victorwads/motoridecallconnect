@@ -35,8 +35,8 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
-import dev.wads.motoridecallconnect.ui.components.TranscriptFeed
 import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
+import dev.wads.motoridecallconnect.ui.components.TripTranscriptPanel
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -124,8 +124,8 @@ fun TripDetailScreen(
                     }
 
                     StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
-                        TranscriptFeed(
-                            items = uiState.transcripts.map { entry ->
+                        TripTranscriptPanel(
+                            transcriptItems = uiState.transcripts.map { entry ->
                                 TranscriptFeedItem(
                                     id = entry.id,
                                     authorId = entry.authorId,
@@ -137,7 +137,7 @@ fun TripDetailScreen(
                                 )
                             },
                             emptyText = stringResource(R.string.no_transcript_records),
-                            maxItems = 500
+                            maxTranscriptItems = 500
                         )
                     }
 

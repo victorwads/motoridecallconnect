@@ -23,4 +23,7 @@ data class TranscriptLine(
     val text: String = "",
     val timestamp: Long = System.currentTimeMillis(),
     val isPartial: Boolean = false
-)
+) {
+    // Required by Firestore object mapper for safe schema evolution.
+    constructor() : this(0, "", "", "", "", System.currentTimeMillis(), false)
+}

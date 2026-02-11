@@ -1,7 +1,9 @@
 package dev.wads.motoridecallconnect.data.repository
 
+import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.CollectionReference
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
@@ -25,6 +27,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class TripRepository(private val tripDaoProvider: () -> TripDao) {
+    companion object {
+        private const val TAG = "TripRepository"
+    }
 
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
@@ -41,7 +46,9 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                             return@addSnapshotListener
                         }
                         if (value != null) {
-                            val trips = value.toObjects(Trip::class.java)
+                            val trips = value.documents.mapNotNull { document ->
+                                safeTrip(document)
+                            }
                             trySend(trips)
                         }
                     }
@@ -110,7 +117,7 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                          return@addSnapshotListener
                      }
                      if (snapshot != null && snapshot.exists()) {
-                         val trip = snapshot.toObject(Trip::class.java)
+                         val trip = safeTrip(snapshot)
                          if (trip != null) {
                              trySend(TripWithTranscripts(trip, emptyList()))
                          }
@@ -160,7 +167,9 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                         return@addSnapshotListener
                     }
                     if (value != null) {
-                        val lines = value.toObjects(TranscriptLine::class.java)
+                        val lines = value.documents.mapNotNull { document ->
+                            safeTranscriptLine(document, fallbackTripId = tripId)
+                        }.sortedBy { line -> line.timestamp }
                         trySend(lines)
                     }
                 }
@@ -183,7 +192,7 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                     }
                     if (value != null) {
                         val entries = value.documents.mapNotNull { document ->
-                            val line = document.toObject(TranscriptLine::class.java) ?: return@mapNotNull null
+                            val line = safeTranscriptLine(document, fallbackTripId = tripId) ?: return@mapNotNull null
                             val statusRaw = document.getString("status")?.uppercase()
                             val resolvedStatus = when (statusRaw) {
                                 TranscriptStatus.PROCESSING.name -> TranscriptStatus.PROCESSING
@@ -299,6 +308,102 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
             if (snapshot.size() < batchSize.toInt()) {
                 break
             }
+        }
+    }
+
+    private fun safeTrip(document: DocumentSnapshot): Trip? {
+        val parsed = runCatching { document.toObject(Trip::class.java) }
+            .onFailure { error ->
+                Log.w(TAG, "Trip parsing fallback for document ${document.id}", error)
+            }
+            .getOrNull()
+
+        if (parsed != null) {
+            return parsed.copy(
+                id = parsed.id.ifBlank { document.id }
+            )
+        }
+
+        val raw = document.data ?: return null
+        val participants = (raw["participants"] as? List<*>)
+            ?.mapNotNull { item -> item as? String }
+            ?.map { value -> value.trim() }
+            ?.filter { value -> value.isNotBlank() }
+            ?.distinct()
+            ?: emptyList()
+
+        return Trip(
+            id = raw["id"].asStringOrNull()?.ifBlank { document.id } ?: document.id,
+            startTime = raw["startTime"].asLong(default = System.currentTimeMillis()),
+            endTime = raw["endTime"].asLongOrNull(),
+            duration = raw["duration"].asLongOrNull(),
+            peerDevice = raw["peerDevice"].asStringOrNull(),
+            participants = participants
+        )
+    }
+
+    private fun safeTranscriptLine(document: DocumentSnapshot, fallbackTripId: String): TranscriptLine? {
+        val parsed = runCatching { document.toObject(TranscriptLine::class.java) }
+            .onFailure { error ->
+                Log.w(TAG, "TranscriptLine parsing fallback for document ${document.id}", error)
+            }
+            .getOrNull()
+
+        if (parsed != null) {
+            return parsed.copy(
+                tripId = parsed.tripId.ifBlank { fallbackTripId },
+                authorName = parsed.authorName.ifBlank { "Unknown" },
+                timestamp = parsed.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+            )
+        }
+
+        val raw = document.data ?: return null
+        val statusRaw = raw["status"].asStringOrNull()?.uppercase()
+        val inferredPartial = when (statusRaw) {
+            TranscriptStatus.PROCESSING.name -> true
+            TranscriptStatus.ERROR.name,
+            TranscriptStatus.SUCCESS.name -> false
+            else -> raw["isPartial"].asBoolean(default = false)
+        }
+        return TranscriptLine(
+            id = raw["id"].asLongOrNull() ?: document.id.toLongOrNull() ?: 0L,
+            tripId = raw["tripId"].asStringOrNull()?.ifBlank { fallbackTripId } ?: fallbackTripId,
+            authorId = raw["authorId"].asStringOrNull().orEmpty(),
+            authorName = raw["authorName"].asStringOrNull()?.ifBlank { "Unknown" } ?: "Unknown",
+            text = raw["text"].asStringOrNull().orEmpty(),
+            timestamp = raw["timestamp"].asLong(default = System.currentTimeMillis()),
+            isPartial = inferredPartial
+        )
+    }
+
+    private fun Any?.asStringOrNull(): String? {
+        return when (this) {
+            is String -> this
+            else -> null
+        }
+    }
+
+    private fun Any?.asLong(default: Long): Long {
+        return asLongOrNull() ?: default
+    }
+
+    private fun Any?.asLongOrNull(): Long? {
+        return when (this) {
+            is Long -> this
+            is Int -> this.toLong()
+            is Double -> this.toLong()
+            is Float -> this.toLong()
+            is String -> this.toLongOrNull()
+            else -> null
+        }
+    }
+
+    private fun Any?.asBoolean(default: Boolean): Boolean {
+        return when (this) {
+            is Boolean -> this
+            is String -> this.equals("true", ignoreCase = true)
+            is Number -> this.toInt() != 0
+            else -> default
         }
     }
 }

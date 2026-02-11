@@ -1,6 +1,4 @@
 package dev.wads.motoridecallconnect.ui.activetrip
-
-import android.text.format.DateFormat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -18,7 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
@@ -26,7 +23,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,8 +48,10 @@ import coil.compose.AsyncImage
 import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.TranscriptStatus
-import dev.wads.motoridecallconnect.ui.components.TranscriptFeed
 import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
+import dev.wads.motoridecallconnect.ui.components.TranscriptQueueViewItem
+import dev.wads.motoridecallconnect.ui.components.TranscriptQueueViewStatus
+import dev.wads.motoridecallconnect.ui.components.TripTranscriptPanel
 import dev.wads.motoridecallconnect.data.repository.UserRepository
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -174,56 +172,45 @@ fun ActiveTripScreen(
         // --- Transcription List ---
         if (uiState.isTripActive || uiState.transcriptEntries.isNotEmpty() || uiState.transcriptQueue.isNotEmpty()) {
             StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val queueStatusText = when {
-                        uiState.transcriptQueueProcessingCount > 0 ->
-                            stringResource(
-                                R.string.transcription_status_processing,
-                                uiState.transcriptQueueProcessingCount,
-                                uiState.transcriptQueuePendingCount
-                            )
-                        uiState.transcriptQueuePendingCount > 0 ->
-                            stringResource(R.string.transcription_status_pending, uiState.transcriptQueuePendingCount)
-                        uiState.transcriptQueueFailedCount > 0 ->
-                            stringResource(R.string.transcription_status_failed, uiState.transcriptQueueFailedCount)
-                        else -> stringResource(R.string.transcription_status_idle)
-                    }
-
-                    Text(
-                        text = queueStatusText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (uiState.transcriptQueue.isNotEmpty()) {
-                        uiState.transcriptQueue.takeLast(10).forEach { queueItem ->
-                            TranscriptionQueueLine(item = queueItem)
-                        }
-                    }
-
-                    if (uiState.transcriptEntries.isEmpty() && uiState.transcriptQueue.isEmpty()) {
-                        TranscriptFeed(
-                            items = emptyList(),
-                            emptyText = stringResource(R.string.transcription_waiting_speech)
+                val queueStatusText = when {
+                    uiState.transcriptQueueProcessingCount > 0 ->
+                        stringResource(
+                            R.string.transcription_status_processing,
+                            uiState.transcriptQueueProcessingCount,
+                            uiState.transcriptQueuePendingCount
                         )
-                    } else if (uiState.transcriptEntries.isNotEmpty()) {
-                        TranscriptFeed(
-                            items = uiState.transcriptEntries.map { entry ->
-                                TranscriptFeedItem(
-                                    id = entry.id,
-                                    authorId = entry.authorId,
-                                    authorName = entry.authorName,
-                                    text = entry.text,
-                                    timestampMs = entry.timestampMs,
-                                    status = entry.status,
-                                    errorMessage = entry.errorMessage
-                                )
-                            },
-                            emptyText = stringResource(R.string.transcription_waiting_speech),
-                            maxItems = 10
-                        )
-                    }
+                    uiState.transcriptQueuePendingCount > 0 ->
+                        stringResource(R.string.transcription_status_pending, uiState.transcriptQueuePendingCount)
+                    uiState.transcriptQueueFailedCount > 0 ->
+                        stringResource(R.string.transcription_status_failed, uiState.transcriptQueueFailedCount)
+                    else -> stringResource(R.string.transcription_status_idle)
                 }
+
+                TripTranscriptPanel(
+                    transcriptItems = uiState.transcriptEntries.map { entry ->
+                        TranscriptFeedItem(
+                            id = entry.id,
+                            authorId = entry.authorId,
+                            authorName = entry.authorName,
+                            text = entry.text,
+                            timestampMs = entry.timestampMs,
+                            status = entry.status,
+                            errorMessage = entry.errorMessage
+                        )
+                    },
+                    emptyText = stringResource(R.string.transcription_waiting_speech),
+                    queueStatusText = queueStatusText,
+                    queueItems = uiState.transcriptQueue.map { queueItem ->
+                        TranscriptQueueViewItem(
+                            id = queueItem.id,
+                            timestampMs = queueItem.timestampMs,
+                            status = queueItem.status.toViewStatus(),
+                            failureReason = queueItem.failureReason
+                        )
+                    },
+                    maxTranscriptItems = 10,
+                    maxQueueItems = 10
+                )
             }
         }
         
@@ -231,67 +218,11 @@ fun ActiveTripScreen(
     }
 }
 
-@Composable
-private fun TranscriptionQueueLine(item: TranscriptQueueItemUi) {
-    val timeLabel = remember(item.timestampMs) {
-        DateFormat.format("HH:mm:ss", item.timestampMs).toString()
-    }
-    val statusLabel = when (item.status) {
-        TranscriptQueueItemStatus.PENDING -> stringResource(R.string.transcription_item_pending)
-        TranscriptQueueItemStatus.PROCESSING -> stringResource(R.string.transcription_item_processing)
-        TranscriptQueueItemStatus.FAILED -> stringResource(R.string.transcription_item_failed)
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = timeLabel,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            when (item.status) {
-                TranscriptQueueItemStatus.PROCESSING -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp
-                    )
-                }
-                TranscriptQueueItemStatus.FAILED -> {
-                    Icon(
-                        imageVector = Icons.Default.ErrorOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-                TranscriptQueueItemStatus.PENDING -> Unit
-            }
-            Text(
-                text = statusLabel,
-                style = MaterialTheme.typography.bodySmall,
-                color = when (item.status) {
-                    TranscriptQueueItemStatus.FAILED -> MaterialTheme.colorScheme.error
-                    TranscriptQueueItemStatus.PROCESSING -> MaterialTheme.colorScheme.primary
-                    TranscriptQueueItemStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
-            )
-        }
-    }
-
-    if (item.status == TranscriptQueueItemStatus.FAILED && !item.failureReason.isNullOrBlank()) {
-        Text(
-            text = item.failureReason,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            maxLines = 1
-        )
+private fun TranscriptQueueItemStatus.toViewStatus(): TranscriptQueueViewStatus {
+    return when (this) {
+        TranscriptQueueItemStatus.PENDING -> TranscriptQueueViewStatus.PENDING
+        TranscriptQueueItemStatus.PROCESSING -> TranscriptQueueViewStatus.PROCESSING
+        TranscriptQueueItemStatus.FAILED -> TranscriptQueueViewStatus.FAILED
     }
 }
 
