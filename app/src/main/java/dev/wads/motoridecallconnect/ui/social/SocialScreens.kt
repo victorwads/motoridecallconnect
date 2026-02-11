@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import dev.wads.motoridecallconnect.data.model.FriendRequest
 import dev.wads.motoridecallconnect.data.model.UserProfile
 import dev.wads.motoridecallconnect.ui.components.EmptyState
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 
 @Composable
 fun SocialScreen(viewModel: SocialViewModel) {
@@ -93,11 +94,7 @@ fun FriendsList(friends: List<UserProfile>, viewModel: SocialViewModel) {
                         modifier = Modifier.padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.padding(end = 16.dp))
-                        Column {
-                            Text(text = friend.displayName.ifEmpty { "Usuário Desconhecido" }, style = MaterialTheme.typography.titleMedium)
-                            Text(text = "ID: ${friend.uid}", style = MaterialTheme.typography.bodySmall)
-                        }
+                        UserProfileView(userId = friend.uid)
                     }
                 }
             }
@@ -125,10 +122,7 @@ fun RequestsList(requests: List<FriendRequest>, viewModel: SocialViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = request.fromName, style = MaterialTheme.typography.titleMedium)
-                            Text(text = request.fromUid, style = MaterialTheme.typography.bodySmall)
-                        }
+                        UserProfileView(userId = request.fromUid, modifier = Modifier.weight(1f))
                         Row {
                             IconButton(onClick = { viewModel.acceptRequest(request) }) {
                                 Icon(Icons.Default.Check, contentDescription = "Aceitar", tint = MaterialTheme.colorScheme.primary)

@@ -31,10 +31,10 @@ service cloud.firestore {
       allow get, list: if isOwner(uid);
       allow create, update, delete: if isOwner(uid);
 
-      // Friends: only owner can manage
+      // Friends: only owner can manage, or reciprocal add when accepting a request
       match /Friends/{friendUid} {
         allow get, list: if isOwner(uid);
-        allow create, update: if isOwner(uid);
+        allow create, update: if isOwner(uid) || (isOwner(friendUid) && exists(/databases/$(database)/documents/Accounts/$(friendUid)/FriendRequests/$(uid)));
         allow delete: if isOwner(friendUid) || isOwner(uid);
       }
 

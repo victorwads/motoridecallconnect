@@ -40,6 +40,7 @@ import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -85,7 +86,10 @@ fun TripDetailScreen(
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                     DetailItem(stringResource(R.string.with_label), trip.peerDevice ?: stringResource(R.string.unknown_device))
+                     Column {
+                         Text(text = stringResource(R.string.with_label), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                         UserProfileView(userId = trip.participants.firstOrNull(), showId = false, avatarSize = 24)
+                     }
                      DetailItem(stringResource(R.string.mode_label), stringResource(R.string.mode_automatic))
                 }
             }

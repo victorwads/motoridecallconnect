@@ -36,11 +36,7 @@ class SocialRepository {
     }
 
     suspend fun getUserProfile(uid: String): UserProfile? {
-        val snapshot = firestore.collection(FirestorePaths.ACCOUNTS_PUBLIC_INFO)
-            .document(uid)
-            .get()
-            .await()
-        return snapshot.toObject(UserProfile::class.java)
+        return UserRepository.getInstance().getUserProfile(uid)
     }
 
     // --- Friend Requests ---
@@ -73,8 +69,8 @@ class SocialRepository {
         val myUser = auth.currentUser ?: throw IllegalStateException("Not logged in")
 
         // 1. Verify target exists
-        val targetProfileFn = firestore.collection(FirestorePaths.ACCOUNTS_PUBLIC_INFO).document(targetUid).get().await()
-        if (!targetProfileFn.exists()) {
+        val targetProfile = UserRepository.getInstance().getUserProfile(targetUid)
+        if (targetProfile == null) {
             throw IllegalArgumentException("User ID not found")
         }
 

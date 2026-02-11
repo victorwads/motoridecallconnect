@@ -36,6 +36,7 @@ import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.EmptyState
 import dev.wads.motoridecallconnect.ui.components.StatusCard
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import dev.wads.motoridecallconnect.utils.QrCodeUtils
 import kotlinx.coroutines.delay
 
@@ -251,22 +252,7 @@ fun DeviceItem(device: Device, onClick: () -> Unit) {
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Default.Wifi, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-        }
-        
-        Spacer(modifier = Modifier.width(16.dp))
-        
-        Column {
-            Text(text = device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(text = device.deviceName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        UserProfileView(userId = device.id, avatarSize = 48)
     }
 }
 
@@ -288,17 +274,7 @@ fun DeviceDetailView(
         
         StatusCard(title = stringResource(R.string.pairing_card_title)) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    modifier = Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Group, contentDescription = null, modifier = Modifier.size(32.dp), tint = MaterialTheme.colorScheme.primary)
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text(device.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(device.deviceName, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                UserProfileView(userId = device.id, avatarSize = 80)
                 
                 Spacer(modifier = Modifier.height(32.dp))
                 

@@ -50,6 +50,7 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusCard
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 
 @Composable
 fun SettingsScreen(
@@ -81,34 +82,7 @@ fun SettingsScreen(
         // Account Section
         StatusCard(title = stringResource(R.string.settings_account_section), icon = Icons.Default.Person) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = if (isLoggedIn) user!!.email?.take(1)?.uppercase() ?: stringResource(R.string.user_initial_default) else stringResource(R.string.user_initial_local),
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = if (isLoggedIn) user!!.email ?: stringResource(R.string.user_default) else stringResource(R.string.local_mode),
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = if (isLoggedIn) stringResource(R.string.connected_via_google) else stringResource(R.string.account_not_linked),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                UserProfileView(userId = user?.uid)
                 
                 BigButton(
                     text = if (isLoggedIn) stringResource(R.string.sign_out) else stringResource(R.string.sign_in),

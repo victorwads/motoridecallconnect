@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.ui.components.EmptyState
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -167,11 +168,23 @@ fun TripItem(trip: Trip, onClick: () -> Unit) {
                         )
                     }
                 }
-                Text(
-                    text = "Com ${trip.peerDevice ?: "Desconhecido"} · Modo Auto", // TODO: Add mode to Trip model
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Com ",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    UserProfileView(
+                        userId = trip.participants.firstOrNull(),
+                        showId = false,
+                        modifier = Modifier.height(24.dp)
+                    )
+                    Text(
+                        text = " · Modo Auto",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             
             Row(verticalAlignment = Alignment.CenterVertically) {

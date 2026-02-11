@@ -43,6 +43,7 @@ import dev.wads.motoridecallconnect.ui.components.ButtonSize
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
 import dev.wads.motoridecallconnect.ui.components.StatusBadge
 import dev.wads.motoridecallconnect.ui.components.StatusCard
+import dev.wads.motoridecallconnect.ui.components.UserProfileView
 
 @Composable
 fun ActiveTripScreen(
@@ -114,19 +115,7 @@ fun ActiveTripScreen(
                 
                 if (uiState.connectedPeer != null && (uiState.connectionStatus == ConnectionStatus.CONNECTED || uiState.connectionStatus == ConnectionStatus.CONNECTING)) {
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = uiState.connectedPeer.name,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "ID: ${uiState.connectedPeer.id}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    UserProfileView(userId = uiState.connectedPeer.id)
                 }
             }
 
