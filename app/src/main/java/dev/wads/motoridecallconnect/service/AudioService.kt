@@ -68,6 +68,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var connectedPeer: Device? = null
     private var connectionStatus = ConnectionStatus.DISCONNECTED
     private val audioBuffer = mutableListOf<Byte>()
+    private val transcriptionStateLock = Any()
     private var lastTransmissionTime = 0L
     private var totalFramesReceived = 0L
     private var totalChunksDispatched = 0L
@@ -337,28 +338,38 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         // 2. Handle Transcription Recording
         // We accumulate audio if trip is active and flush after sustained silence.
         if (isTripActive) {
-            audioBuffer.addAll(currentData.toList())
+            var flushReason: String? = null
+            synchronized(transcriptionStateLock) {
+                audioBuffer.addAll(currentData.toList())
 
-            val frameDurationMs = bytesToDurationMs(size)
-            bufferedAudioDurationMs += frameDurationMs
+                val frameDurationMs = bytesToDurationMs(size)
+                bufferedAudioDurationMs += frameDurationMs
 
-            if (isSpeechDetected) {
-                consecutiveSilenceDurationMs = 0L
-                chunkHadSpeech = true
-            } else {
-                consecutiveSilenceDurationMs += frameDurationMs
+                if (isSpeechDetected) {
+                    consecutiveSilenceDurationMs = 0L
+                    chunkHadSpeech = true
+                } else {
+                    consecutiveSilenceDurationMs += frameDurationMs
+                }
+
+                val hasMinimumContext = bufferedAudioDurationMs >= TRANSCRIPTION_MIN_CONTEXT_MS
+                val silenceFlushReached = consecutiveSilenceDurationMs >= TRANSCRIPTION_SILENCE_FLUSH_MS
+                val maxChunkReached = bufferedAudioDurationMs >= TRANSCRIPTION_MAX_CHUNK_MS
+
+                if (hasMinimumContext && (silenceFlushReached || maxChunkReached)) {
+                    flushReason = if (maxChunkReached) "max_chunk_timeout" else "silence_timeout"
+                }
             }
 
-            val hasMinimumContext = bufferedAudioDurationMs >= TRANSCRIPTION_MIN_CONTEXT_MS
-            val silenceFlushReached = consecutiveSilenceDurationMs >= TRANSCRIPTION_SILENCE_FLUSH_MS
-            val maxChunkReached = bufferedAudioDurationMs >= TRANSCRIPTION_MAX_CHUNK_MS
-
-            if (hasMinimumContext && (silenceFlushReached || maxChunkReached)) {
-                val reason = if (maxChunkReached) "max_chunk_timeout" else "silence_timeout"
+            flushReason?.let { reason ->
                 flushTranscriptionBuffer(force = false, reason = reason)
             }
-        } else if (audioBuffer.isNotEmpty()) {
-            resetTranscriptionState(clearAudio = true)
+        } else {
+            synchronized(transcriptionStateLock) {
+                if (audioBuffer.isNotEmpty()) {
+                    resetTranscriptionStateLocked(clearAudio = true)
+                }
+            }
         }
     }
 
@@ -464,20 +475,26 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun flushTranscriptionBuffer(force: Boolean, reason: String) {
-        if (audioBuffer.isEmpty()) {
-            resetTranscriptionState(clearAudio = false)
-            return
-        }
+        val chunk: ByteArray
+        val chunkDurationMs: Long
+        val silenceMs: Long
+        val hadSpeech: Boolean
+        synchronized(transcriptionStateLock) {
+            if (audioBuffer.isEmpty()) {
+                resetTranscriptionStateLocked(clearAudio = false)
+                return
+            }
 
-        if (!force && bufferedAudioDurationMs < TRANSCRIPTION_MIN_CONTEXT_MS) {
-            return
-        }
+            if (!force && bufferedAudioDurationMs < TRANSCRIPTION_MIN_CONTEXT_MS) {
+                return
+            }
 
-        val chunk = audioBuffer.toByteArray()
-        val chunkDurationMs = bufferedAudioDurationMs
-        val silenceMs = consecutiveSilenceDurationMs
-        val hadSpeech = chunkHadSpeech
-        resetTranscriptionState(clearAudio = true)
+            chunk = audioBuffer.toByteArray()
+            chunkDurationMs = bufferedAudioDurationMs
+            silenceMs = consecutiveSilenceDurationMs
+            hadSpeech = chunkHadSpeech
+            resetTranscriptionStateLocked(clearAudio = true)
+        }
 
         if (!force && !hadSpeech) {
             Log.d(
@@ -508,6 +525,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun resetTranscriptionState(clearAudio: Boolean) {
+        synchronized(transcriptionStateLock) {
+            resetTranscriptionStateLocked(clearAudio)
+        }
+    }
+
+    private fun resetTranscriptionStateLocked(clearAudio: Boolean) {
         if (clearAudio) {
             audioBuffer.clear()
         }
