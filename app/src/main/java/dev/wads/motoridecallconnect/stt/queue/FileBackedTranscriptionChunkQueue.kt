@@ -188,6 +188,27 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         }
     }
 
+    override fun resetAllToPending() {
+        synchronized(lock) {
+            var resetCount = 0
+            items.forEachIndexed { index, item ->
+                if (item.status == TranscriptionChunkStatus.PROCESSING ||
+                    item.status == TranscriptionChunkStatus.FAILED
+                ) {
+                    val updated = item.copy(
+                        status = TranscriptionChunkStatus.PENDING,
+                        failureReason = null,
+                        attempts = 0
+                    )
+                    items[index] = updated
+                    writeMetadata(metaFileFor(updated.id), updated)
+                    resetCount++
+                }
+            }
+            Log.i(TAG, "resetAllToPending: reset $resetCount items back to PENDING")
+        }
+    }
+
     override fun snapshot(): TranscriptionQueueSnapshot {
         synchronized(lock) {
             sortItemsLocked()

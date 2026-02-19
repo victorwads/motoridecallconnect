@@ -195,6 +195,7 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                             val line = safeTranscriptLine(document, fallbackTripId = tripId) ?: return@mapNotNull null
                             val statusRaw = document.getString("status")?.uppercase()
                             val resolvedStatus = when (statusRaw) {
+                                TranscriptStatus.QUEUED.name -> TranscriptStatus.QUEUED
                                 TranscriptStatus.PROCESSING.name -> TranscriptStatus.PROCESSING
                                 TranscriptStatus.ERROR.name -> TranscriptStatus.ERROR
                                 TranscriptStatus.SUCCESS.name -> TranscriptStatus.SUCCESS
@@ -202,6 +203,7 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                             }
                             val resolvedText = when {
                                 line.text.isNotBlank() -> line.text
+                                resolvedStatus == TranscriptStatus.QUEUED -> "Queued for transcription..."
                                 resolvedStatus == TranscriptStatus.PROCESSING -> "Processing audio..."
                                 resolvedStatus == TranscriptStatus.ERROR -> "Transcription error"
                                 else -> ""

@@ -1,6 +1,7 @@
 package dev.wads.motoridecallconnect.data.model
 
 enum class TranscriptStatus {
+    QUEUED,
     PROCESSING,
     SUCCESS,
     ERROR

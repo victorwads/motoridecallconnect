@@ -50,5 +50,11 @@ interface TranscriptionChunkQueue {
 
     fun markRetry(chunkId: String)
 
+    /**
+     * Resets all PROCESSING and FAILED items back to PENDING.
+     * Used when the STT engine changes and all items need to be re-processed.
+     */
+    fun resetAllToPending()
+
     fun snapshot(): TranscriptionQueueSnapshot
 }

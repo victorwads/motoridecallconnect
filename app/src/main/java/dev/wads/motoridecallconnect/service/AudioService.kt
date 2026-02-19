@@ -113,7 +113,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var audioFocusRequest: AudioFocusRequest? = null
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val playbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var transcriptionQueue: TranscriptionChunkQueue
+    @Volatile private var transcriptionCancelled = false
 
     // Playback state
     @Volatile private var currentPlaybackTrack: android.media.AudioTrack? = null
@@ -310,6 +312,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         transcriptionExecutor.shutdown()
         if (!transcriptionExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
             transcriptionExecutor.shutdownNow()
+        }
+        playbackExecutor.shutdown()
+        if (!playbackExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+            playbackExecutor.shutdownNow()
         }
         speechRecognizerHelper?.destroy()
         speechRecognizerHelper = null
@@ -556,9 +562,13 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             speechRecognizerHelper?.setWhisperModel(whisperModelId)
         }
         if (engineChanged) {
+            // Cancel any in-progress transcription, reset everything to PENDING
+            cancelTranscriptionProcessing(reason = "stt_engine_change")
             flushTranscriptionBuffer(force = true, reason = "stt_engine_change")
             resetTranscriptionState(clearAudio = true)
             speechRecognizerHelper?.setEngine(sttEngine)
+            transcriptionQueue.resetAllToPending()
+            publishTranscriptionQueueSnapshot(reason = "engine_change_reset")
         }
         if (nativeLanguageChanged) {
             speechRecognizerHelper?.setNativeLanguageTag(nativeSpeechLanguageTag)
@@ -569,8 +579,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             setTransmitting(false, reason = "trip_end")
             applyRemoteTransmissionState(false, source = "trip_end")
             stopAudioCaptureIfNeeded(reason = "trip_end")
-            flushTranscriptionBuffer(force = true, reason = "trip_end")
             speechRecognizerHelper?.stopListening()
+            flushTranscriptionBuffer(force = true, reason = "trip_end")
         }
         if (tripChanged && tripActive) {
             resetTranscriptionState(clearAudio = true)
@@ -1547,7 +1557,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         )
         persistTranscriptChunkToFirebase(
             chunk = queuedChunk,
-            status = TranscriptStatus.PROCESSING,
+            status = TranscriptStatus.QUEUED,
             text = "",
             errorMessage = null
         )
@@ -1581,7 +1591,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         Log.d(TAG, "playTranscriptionChunk: read ${audioBytes.size} bytes, playing at ${AUDIO_SAMPLE_RATE_HZ}Hz mono PCM16")
 
-        transcriptionExecutor.execute {
+        playbackExecutor.execute {
             try {
                 val minBufferSize = AndroidAudioTrack.getMinBufferSize(
                     AUDIO_SAMPLE_RATE_HZ,
@@ -1768,6 +1778,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         )
     }
 
+    private fun cancelTranscriptionProcessing(reason: String) {
+        Log.i(TAG, "cancelTranscriptionProcessing: reason=$reason")
+        transcriptionCancelled = true
+        // The processing loop will check this flag and stop gracefully
+    }
+
     private fun scheduleTranscriptionQueueProcessing(reason: String) {
         transcriptionExecutor.execute {
             processTranscriptionQueue(reason)
@@ -1780,13 +1796,21 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 return
             }
             isTranscriptionWorkerRunning = true
+            transcriptionCancelled = false
         }
 
         try {
             val recognizer = getOrCreateSpeechRecognizerHelper()
             recognizer.startListening()
-            while (true) {
+            while (!transcriptionCancelled) {
                 val queuedChunk = transcriptionQueue.pollNextPending() ?: break
+                // Update Firebase status from QUEUED to PROCESSING
+                persistTranscriptChunkToFirebase(
+                    chunk = queuedChunk,
+                    status = TranscriptStatus.PROCESSING,
+                    text = "",
+                    errorMessage = null
+                )
                 publishTranscriptionQueueSnapshot(reason = "chunk_processing_started")
 
                 val audioBytes = transcriptionQueue.readAudioBytes(queuedChunk)
@@ -1811,6 +1835,20 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         )
                     }
                 val elapsedMs = System.currentTimeMillis() - startMs
+
+                // If cancelled during transcription, put it back and stop
+                if (transcriptionCancelled) {
+                    transcriptionQueue.markRetry(queuedChunk.id)
+                    persistTranscriptChunkToFirebase(
+                        chunk = queuedChunk,
+                        status = TranscriptStatus.QUEUED,
+                        text = "",
+                        errorMessage = null
+                    )
+                    Log.i(TAG, "Transcription cancelled mid-chunk. queueId=${queuedChunk.id}, putting back to PENDING")
+                    break
+                }
+
                 val finalText = result.text.orEmpty().trim()
 
                 when {
@@ -1871,7 +1909,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     }
                 }
             }
-            Log.d(TAG, "Transcription queue drained. triggerReason=$triggerReason")
+            if (transcriptionCancelled) {
+                Log.d(TAG, "Transcription queue processing cancelled. triggerReason=$triggerReason")
+            } else {
+                Log.d(TAG, "Transcription queue drained. triggerReason=$triggerReason")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "Unexpected transcription queue worker failure. triggerReason=$triggerReason", t)
         } finally {
@@ -1897,6 +1939,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
             val resolvedText = when {
                 text.isNotBlank() -> text
+                status == TranscriptStatus.QUEUED -> "Queued for transcription..."
                 status == TranscriptStatus.PROCESSING -> "Processing audio..."
                 status == TranscriptStatus.ERROR -> "Transcription error"
                 else -> ""
@@ -1908,7 +1951,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "authorName" to (currentUser.displayName ?: "Unknown"),
                 "text" to resolvedText,
                 "timestamp" to chunk.createdAtMs,
-                "isPartial" to (status == TranscriptStatus.PROCESSING),
+                "isPartial" to (status == TranscriptStatus.PROCESSING || status == TranscriptStatus.QUEUED),
                 "status" to status.name,
                 "audioFileName" to java.io.File(chunk.audioFilePath).name
             )

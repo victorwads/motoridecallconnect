@@ -322,7 +322,19 @@ class SpeechRecognizerHelper(
     }
 
     fun transcribeChunk(data: ByteArray): ChunkTranscriptionResult {
-        return transcribeChunkInternal(data, allowLegacyNativeFallback = false)
+        val shouldRestoreListeningState = !isListening
+        if (shouldRestoreListeningState) {
+            // Queue-based transcription can run with no active trip. Keep it mic-free by
+            // enabling only the internal chunk session state temporarily.
+            isListening = true
+        }
+        return try {
+            transcribeChunkInternal(data, allowLegacyNativeFallback = false)
+        } finally {
+            if (shouldRestoreListeningState) {
+                isListening = false
+            }
+        }
     }
 
     private fun transcribeChunkInternal(

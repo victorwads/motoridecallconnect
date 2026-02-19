@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -106,13 +107,15 @@ private fun TranscriptFeedLine(
     val lineColor = when (item.status) {
         TranscriptStatus.ERROR -> MaterialTheme.colorScheme.error
         TranscriptStatus.PROCESSING -> MaterialTheme.colorScheme.onSurfaceVariant
+        TranscriptStatus.QUEUED -> MaterialTheme.colorScheme.onSurfaceVariant
         TranscriptStatus.SUCCESS -> MaterialTheme.colorScheme.onSurface
     }
     val displayText = when {
-        item.text.isNotBlank() -> item.text
+        item.text.isNotBlank() && item.status != TranscriptStatus.QUEUED && item.status != TranscriptStatus.PROCESSING -> item.text
+        item.status == TranscriptStatus.QUEUED -> stringResource(R.string.transcript_status_queued_short)
         item.status == TranscriptStatus.PROCESSING -> stringResource(R.string.transcript_status_processing_short)
         item.status == TranscriptStatus.ERROR -> stringResource(R.string.transcript_status_error_short)
-        else -> ""
+        else -> if (item.text.isNotBlank()) item.text else ""
     }
 
     Row(
@@ -166,6 +169,14 @@ private fun TranscriptFeedLine(
                             strokeWidth = 2.dp
                         )
                     }
+                    TranscriptStatus.QUEUED -> {
+                        Icon(
+                            imageVector = Icons.Default.HourglassEmpty,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
                     TranscriptStatus.ERROR -> {
                         Icon(
                             imageVector = Icons.Default.ErrorOutline,
@@ -199,8 +210,8 @@ private fun TranscriptFeedLine(
             }
         }
 
-        // Play/Stop + Retry actions (available on all non-PROCESSING items)
-        if (item.status != TranscriptStatus.PROCESSING) {
+        // Play/Stop + Retry actions (available on non-PROCESSING and non-QUEUED items)
+        if (item.status != TranscriptStatus.PROCESSING && item.status != TranscriptStatus.QUEUED) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Play / Stop toggle
                 IconButton(

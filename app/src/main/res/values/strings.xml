@@ -110,6 +110,7 @@
     <string name="transcription_status_pending">Transcription status: %1$d pending in queue</string>
     <string name="transcription_status_failed">Transcription status: %1$d failed item(s)</string>
     <string name="transcript_status_processing_short">Processing audio...</string>
+    <string name="transcript_status_queued_short">Queued for transcription...</string>
     <string name="transcript_status_error_short">Transcription error</string>
     <string name="transcription_item_pending">Queued...</string>
     <string name="transcription_item_processing">Processing...</string>

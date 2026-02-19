@@ -118,6 +118,9 @@
     <string name="mode_automatic">Automático</string>
     <string name="full_transcript_title">Transcrição completa</string>
     <string name="no_transcript_records">Sem registros de transcrição.</string>
+    <string name="transcript_status_processing_short">Processando áudio…</string>
+    <string name="transcript_status_queued_short">Na fila de transcrição…</string>
+    <string name="transcript_status_error_short">Erro na transcrição</string>
     <string name="delete_trip">Apagar viagem</string>
     <string name="trip_not_found">Viagem não encontrada.</string>
 

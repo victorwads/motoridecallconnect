@@ -57,7 +57,7 @@ data class TranscriptEntryUi(
     val errorMessage: String? = null
 ) {
     val isPartial: Boolean
-        get() = status == TranscriptStatus.PROCESSING
+        get() = status == TranscriptStatus.PROCESSING || status == TranscriptStatus.QUEUED
 }
 
 data class ActiveTripUiState(
