@@ -164,9 +164,17 @@
     <string name="wifi_direct_requirement_wifi_missing">Wi-Fi: desligado</string>
     <string name="wifi_direct_requirement_location_ok">Localização: ligada</string>
     <string name="wifi_direct_requirement_location_missing">Localização: desligada</string>
+    <string name="wifi_direct_requirement_router_connected">Wi-Fi do roteador: conectado (recomendado desconectar)</string>
+    <string name="wifi_direct_requirement_router_disconnected">Wi-Fi do roteador: desconectado</string>
     <string name="wifi_direct_grant_permissions">Conceder permissões do Wi-Fi Direct</string>
     <string name="wifi_direct_open_wifi_settings">Abrir configurações de Wi-Fi</string>
     <string name="wifi_direct_open_location_settings">Abrir configurações de localização</string>
+    <string name="wifi_direct_disconnect_router">Desconectar Wi-Fi do roteador</string>
+    <string name="wifi_direct_search_button">Buscar peers Wi-Fi Direct</string>
+    <string name="wifi_direct_no_peers">Nenhum peer Wi-Fi Direct encontrado ainda.</string>
+    <string name="wifi_direct_in_local_card_title">Wi-Fi Direct (dentro da Rede Local)</string>
+    <string name="wifi_direct_in_local_card_desc">Use o Wi-Fi Direct apenas para criar o link local entre os celulares. Depois do link, a negociação continua no fluxo de rede local.</string>
+    <string name="wifi_direct_host_hint">Crie o grupo Wi-Fi Direct e mantenha o hosting local ativo para conexão por dispositivos próximos/QR.</string>
     <string name="wifi_direct_endpoint_pending">Endpoint do Wi-Fi Direct será resolvido ao conectar</string>
     <string name="retry_wifi_direct_group">Recriar grupo Wi-Fi Direct</string>
     <string name="camera_permission_title">Permissão de câmera necessária</string>
@@ -178,4 +186,6 @@
     <string name="network_interfaces_title">Interfaces detectadas</string>
     <string name="network_interfaces_empty">Nenhuma interface de rede ativa encontrada.</string>
     <string name="refresh_network_info">Atualizar info de rede</string>
+    <string name="stop_hosting">Parar hosting</string>
+    <string name="start_hosting">Iniciar hosting</string>
 </resources>

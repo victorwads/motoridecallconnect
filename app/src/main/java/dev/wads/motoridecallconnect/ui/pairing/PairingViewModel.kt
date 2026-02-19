@@ -32,6 +32,8 @@ class PairingViewModel(
 
     private val _discoveredDevices = MutableStateFlow<List<Device>>(emptyList())
     val discoveredDevices: StateFlow<List<Device>> = _discoveredDevices.asStateFlow()
+    private val _wifiDirectDiscoveredDevices = MutableStateFlow<List<Device>>(emptyList())
+    val wifiDirectDiscoveredDevices: StateFlow<List<Device>> = _wifiDirectDiscoveredDevices.asStateFlow()
 
     private val _isHosting = MutableStateFlow(false)
     val isHosting: StateFlow<Boolean> = _isHosting.asStateFlow()
@@ -68,16 +70,20 @@ class PairingViewModel(
         viewModelScope.launch {
             combine(
                 localRepository.discoveredDevices,
-                wifiDirectRepository.discoveredDevices,
                 _selectedTransport
-            ) { localDevices, wifiDirectDevices, selectedMode ->
+            ) { localDevices, selectedMode ->
                 when (selectedMode) {
                     ConnectionTransportMode.LOCAL_NETWORK -> localDevices
-                    ConnectionTransportMode.WIFI_DIRECT -> wifiDirectDevices
                     ConnectionTransportMode.INTERNET -> emptyList()
+                    ConnectionTransportMode.WIFI_DIRECT -> localDevices
                 }
             }.collect { devices ->
                 _discoveredDevices.value = devices
+            }
+        }
+        viewModelScope.launch {
+            wifiDirectRepository.discoveredDevices.collect { devices ->
+                _wifiDirectDiscoveredDevices.value = devices
             }
         }
         viewModelScope.launch {
@@ -89,17 +95,23 @@ class PairingViewModel(
     }
 
     fun setConnectionTransport(mode: ConnectionTransportMode) {
-        if (_selectedTransport.value == mode) {
+        val normalizedMode = when (mode) {
+            ConnectionTransportMode.WIFI_DIRECT -> ConnectionTransportMode.LOCAL_NETWORK
+            else -> mode
+        }
+        if (_selectedTransport.value == normalizedMode) {
             return
         }
         stopDiscovery()
         stopHosting()
-        _selectedTransport.value = mode
+        stopWifiDirectDiscovery()
+        stopWifiDirectHosting()
+        _selectedTransport.value = normalizedMode
         _connectionErrorMessage.value = null
-        when (mode) {
+        when (normalizedMode) {
             ConnectionTransportMode.LOCAL_NETWORK -> refreshNetworkSnapshot()
-            ConnectionTransportMode.WIFI_DIRECT -> wifiDirectRepository.refreshState()
             ConnectionTransportMode.INTERNET -> _discoveredDevices.value = emptyList()
+            ConnectionTransportMode.WIFI_DIRECT -> Unit
         }
         startDiscovery()
     }
@@ -118,18 +130,15 @@ class PairingViewModel(
                 refreshNetworkSnapshot()
                 localRepository.startDiscovery()
             }
-            ConnectionTransportMode.WIFI_DIRECT -> {
-                wifiDirectRepository.startDiscovery()
-            }
             ConnectionTransportMode.INTERNET -> {
                 _discoveredDevices.value = emptyList()
             }
+            ConnectionTransportMode.WIFI_DIRECT -> localRepository.startDiscovery()
         }
     }
 
     fun stopDiscovery() {
         localRepository.stopDiscovery()
-        wifiDirectRepository.stopDiscovery()
     }
 
     fun startHosting(deviceName: String, port: Int = DEFAULT_SIGNALING_PORT) {
@@ -154,18 +163,13 @@ class PairingViewModel(
                 )
             }
 
-            ConnectionTransportMode.WIFI_DIRECT -> {
-                _isHosting.value = true
-                _qrCodeText.value = null
-                wifiDirectRepository.startHosting()
-            }
-
             ConnectionTransportMode.INTERNET -> {
                 _isHosting.value = false
                 _qrCodeText.value = null
                 _connectionErrorMessage.value =
                     "Modo Internet/WebRTC ainda não está habilitado nesta versão."
             }
+            ConnectionTransportMode.WIFI_DIRECT -> Unit
         }
     }
 
@@ -201,8 +205,32 @@ class PairingViewModel(
 
     fun connectToDevice(device: Device) {
         _connectionErrorMessage.value = null
+        if (device.connectionTransport == ConnectionTransportMode.WIFI_DIRECT) {
+            viewModelScope.launch {
+                wifiDirectRepository.disconnectInfrastructureWifi()
+                val result = wifiDirectRepository.connectToPeer(
+                    target = device,
+                    port = device.port ?: DEFAULT_SIGNALING_PORT
+                )
+                result
+                    .onSuccess { resolvedDevice ->
+                        _pendingDeviceToConnect.emit(
+                            resolvedDevice.copy(
+                                connectionTransport = ConnectionTransportMode.WIFI_DIRECT
+                            )
+                        )
+                    }
+                    .onFailure { error ->
+                        _connectionErrorMessage.value =
+                            error.message ?: "Falha ao conectar via Wi-Fi Direct."
+                    }
+            }
+            return
+        }
+
         when (_selectedTransport.value) {
-            ConnectionTransportMode.LOCAL_NETWORK -> {
+            ConnectionTransportMode.LOCAL_NETWORK,
+            ConnectionTransportMode.WIFI_DIRECT -> {
                 _pendingDeviceToConnect.tryEmit(
                     device.copy(
                         connectionTransport = ConnectionTransportMode.LOCAL_NETWORK
@@ -210,32 +238,38 @@ class PairingViewModel(
                 )
             }
 
-            ConnectionTransportMode.WIFI_DIRECT -> {
-                viewModelScope.launch {
-                    val result = wifiDirectRepository.connectToPeer(
-                        target = device,
-                        port = device.port ?: DEFAULT_SIGNALING_PORT
-                    )
-                    result
-                        .onSuccess { resolvedDevice ->
-                            _pendingDeviceToConnect.emit(
-                                resolvedDevice.copy(
-                                    connectionTransport = ConnectionTransportMode.WIFI_DIRECT
-                                )
-                            )
-                        }
-                        .onFailure { error ->
-                            _connectionErrorMessage.value =
-                                error.message ?: "Falha ao conectar via Wi-Fi Direct."
-                        }
-                }
-            }
-
             ConnectionTransportMode.INTERNET -> {
                 _connectionErrorMessage.value =
                     "Modo Internet/WebRTC ainda não está habilitado nesta versão."
             }
         }
+    }
+
+    fun startWifiDirectDiscovery() {
+        wifiDirectRepository.disconnectInfrastructureWifi()
+        wifiDirectRepository.startDiscovery()
+    }
+
+    fun stopWifiDirectDiscovery() {
+        wifiDirectRepository.stopDiscovery()
+    }
+
+    fun startWifiDirectHosting() {
+        wifiDirectRepository.disconnectInfrastructureWifi()
+        wifiDirectRepository.startHosting()
+    }
+
+    fun stopWifiDirectHosting() {
+        wifiDirectRepository.stopHosting()
+    }
+
+    fun disconnectRouterWifiForWifiDirect() {
+        val success = wifiDirectRepository.disconnectInfrastructureWifi()
+        if (!success) {
+            _connectionErrorMessage.value =
+                "Não foi possível desconectar automaticamente do Wi-Fi do roteador. Faça isso manualmente."
+        }
+        wifiDirectRepository.refreshState()
     }
 
     fun clearConnectionErrorMessage() {
@@ -412,6 +446,8 @@ class PairingViewModel(
         super.onCleared()
         stopHosting()
         stopDiscovery()
+        stopWifiDirectDiscovery()
+        stopWifiDirectHosting()
         wifiDirectRepository.tearDown()
     }
 

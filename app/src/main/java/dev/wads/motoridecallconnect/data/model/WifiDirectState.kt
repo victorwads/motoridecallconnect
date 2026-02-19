@@ -9,6 +9,7 @@ data class WifiDirectState(
     val groupFormed: Boolean = false,
     val groupOwner: Boolean = false,
     val groupOwnerIp: String? = null,
+    val infrastructureWifiConnected: Boolean = false,
     val localDeviceName: String? = null,
     val failureMessage: String? = null
 )

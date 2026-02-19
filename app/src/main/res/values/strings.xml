@@ -212,9 +212,17 @@
     <string name="wifi_direct_requirement_wifi_missing">Wi-Fi: OFF</string>
     <string name="wifi_direct_requirement_location_ok">Location: ON</string>
     <string name="wifi_direct_requirement_location_missing">Location: OFF</string>
+    <string name="wifi_direct_requirement_router_connected">Router Wi-Fi: connected (disconnect recommended)</string>
+    <string name="wifi_direct_requirement_router_disconnected">Router Wi-Fi: disconnected</string>
     <string name="wifi_direct_grant_permissions">Grant Wi-Fi Direct permissions</string>
     <string name="wifi_direct_open_wifi_settings">Open Wi-Fi settings</string>
     <string name="wifi_direct_open_location_settings">Open location settings</string>
+    <string name="wifi_direct_disconnect_router">Disconnect router Wi-Fi</string>
+    <string name="wifi_direct_search_button">Search Wi-Fi Direct peers</string>
+    <string name="wifi_direct_no_peers">No Wi-Fi Direct peers found yet.</string>
+    <string name="wifi_direct_in_local_card_title">Wi-Fi Direct (inside Local Network)</string>
+    <string name="wifi_direct_in_local_card_desc">Use Wi-Fi Direct only to create the local link between phones. After linking, connection negotiation still uses local networking.</string>
+    <string name="wifi_direct_host_hint">Create a Wi-Fi Direct group and keep local hosting active for nearby/QR connection.</string>
     <string name="wifi_direct_endpoint_pending">Wi-Fi Direct endpoint will be resolved on connect</string>
     <string name="retry_wifi_direct_group">Recreate Wi-Fi Direct group</string>
     <string name="show_qr_code">Show QR Code</string>

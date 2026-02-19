@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -91,6 +92,7 @@ fun PairingScreen(
     onDisconnectClick: () -> Unit
 ) {
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
+    val wifiDirectDiscoveredDevices by viewModel.wifiDirectDiscoveredDevices.collectAsState()
     val isHosting by viewModel.isHosting.collectAsState()
     val qrCodeText by viewModel.qrCodeText.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
@@ -115,14 +117,14 @@ fun PairingScreen(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         wifiDirectChecks = context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
-        if (wifiDirectChecks.ready && selectedTransport == ConnectionTransportMode.WIFI_DIRECT && selectedRoleTab == 0) {
-            viewModel.startDiscovery()
+        if (wifiDirectChecks.ready && selectedTransport == ConnectionTransportMode.LOCAL_NETWORK) {
+            viewModel.startWifiDirectDiscovery()
         }
     }
 
     DisposableEffect(lifecycleOwner, selectedTransport) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && selectedTransport == ConnectionTransportMode.WIFI_DIRECT) {
+            if (event == Lifecycle.Event.ON_RESUME && selectedTransport == ConnectionTransportMode.LOCAL_NETWORK) {
                 wifiDirectChecks = context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
             }
         }
@@ -146,6 +148,12 @@ fun PairingScreen(
 
     LaunchedEffect(isHosting) {
         selectedRoleTab = if (isHosting) 1 else 0
+    }
+
+    LaunchedEffect(selectedTransport) {
+        if (selectedTransport == ConnectionTransportMode.INTERNET && selectedRoleTab != 0) {
+            selectedRoleTab = 0
+        }
     }
 
     if (connectionStatus == ConnectionStatus.CONNECTED) {
@@ -173,7 +181,6 @@ fun PairingScreen(
 
                 val transportModes = listOf(
                     ConnectionTransportMode.LOCAL_NETWORK,
-                    ConnectionTransportMode.WIFI_DIRECT,
                     ConnectionTransportMode.INTERNET
                 )
 
@@ -194,15 +201,16 @@ fun PairingScreen(
                             selected = selectedTransport == mode,
                             onClick = {
                                 viewModel.setConnectionTransport(mode)
-                                if (selectedRoleTab == 1) {
+                                if (mode == ConnectionTransportMode.INTERNET) {
+                                    selectedRoleTab = 0
+                                }
+                                if (selectedRoleTab == 1 && mode == ConnectionTransportMode.LOCAL_NETWORK) {
                                     viewModel.activateHostMode(Build.MODEL)
-                                } else if (mode != ConnectionTransportMode.WIFI_DIRECT || wifiDirectChecks.ready) {
+                                } else {
                                     viewModel.activateClientMode()
                                 }
-                                if (mode == ConnectionTransportMode.WIFI_DIRECT) {
-                                    wifiDirectChecks =
-                                        context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
-                                }
+                                wifiDirectChecks =
+                                    context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
                             },
                             text = { Text(stringResource(mode.toLabelRes())) }
                         )
@@ -211,40 +219,39 @@ fun PairingScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                val roleTabs = listOf(
-                    stringResource(R.string.client_mode_tab),
-                    stringResource(R.string.host_mode_tab)
-                )
-                TabRow(
-                    selectedTabIndex = selectedRoleTab,
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    indicator = { tabPositions ->
-                        TabRowDefaults.SecondaryIndicator(
-                            Modifier.tabIndicatorOffset(tabPositions[selectedRoleTab]),
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                if (selectedTransport == ConnectionTransportMode.LOCAL_NETWORK) {
+                    val roleTabs = listOf(
+                        stringResource(R.string.client_mode_tab),
+                        stringResource(R.string.host_mode_tab)
+                    )
+                    TabRow(
+                        selectedTabIndex = selectedRoleTab,
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        indicator = { tabPositions ->
+                            TabRowDefaults.SecondaryIndicator(
+                                Modifier.tabIndicatorOffset(tabPositions[selectedRoleTab]),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    ) {
+                        roleTabs.forEachIndexed { index, title ->
+                            Tab(
+                                selected = selectedRoleTab == index,
+                                onClick = {
+                                    selectedRoleTab = index
+                                    if (index == 1) {
+                                        viewModel.activateHostMode(Build.MODEL)
+                                    } else {
+                                        viewModel.activateClientMode()
+                                    }
+                                },
+                                text = { Text(title) }
+                            )
+                        }
                     }
-                ) {
-                    roleTabs.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedRoleTab == index,
-                            onClick = {
-                                selectedRoleTab = index
-                                if (index == 1) {
-                                    viewModel.activateHostMode(Build.MODEL)
-                                } else if (selectedTransport != ConnectionTransportMode.WIFI_DIRECT || wifiDirectChecks.ready) {
-                                    viewModel.activateClientMode()
-                                } else {
-                                    viewModel.stopHosting()
-                                }
-                            },
-                            text = { Text(title) }
-                        )
-                    }
+                    Spacer(modifier = Modifier.height(20.dp))
                 }
-
-                Spacer(modifier = Modifier.height(20.dp))
 
                 if (!connectionErrorMessage.isNullOrBlank()) {
                     StatusCard(title = stringResource(R.string.connection_error_title)) {
@@ -265,6 +272,7 @@ fun PairingScreen(
                     ClientModeContent(
                         selectedTransport = selectedTransport,
                         discoveredDevices = discoveredDevices,
+                        wifiDirectDiscoveredDevices = wifiDirectDiscoveredDevices,
                         networkSnapshot = networkSnapshot,
                         wifiDirectState = wifiDirectState,
                         wifiDirectChecks = wifiDirectChecks,
@@ -288,9 +296,10 @@ fun PairingScreen(
                             wifiDirectChecks =
                                 context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
                             if (wifiDirectChecks.ready) {
-                                viewModel.startDiscovery()
+                                viewModel.startWifiDirectDiscovery()
                             }
-                        }
+                        },
+                        onDisconnectRouterWifi = { viewModel.disconnectRouterWifiForWifiDirect() }
                     )
                 } else {
                     HostModeContent(
@@ -313,9 +322,11 @@ fun PairingScreen(
                             wifiDirectChecks =
                                 context.readWifiDirectSystemChecks(requiredWifiDirectPermissions)
                             if (wifiDirectChecks.ready) {
-                                viewModel.restartCurrentHostingIfNeeded()
+                                viewModel.startWifiDirectHosting()
                             }
-                        }
+                        },
+                        onStopWifiDirectHosting = { viewModel.stopWifiDirectHosting() },
+                        onDisconnectRouterWifi = { viewModel.disconnectRouterWifiForWifiDirect() }
                     )
                 }
             }
@@ -384,6 +395,7 @@ fun PairingScreen(
 private fun ClientModeContent(
     selectedTransport: ConnectionTransportMode,
     discoveredDevices: List<Device>,
+    wifiDirectDiscoveredDevices: List<Device>,
     networkSnapshot: NetworkUtils.NetworkSnapshot,
     wifiDirectState: WifiDirectState,
     wifiDirectChecks: WifiDirectSystemChecks,
@@ -393,7 +405,8 @@ private fun ClientModeContent(
     onOpenScanner: () -> Unit,
     onSelectDevice: (Device) -> Unit,
     onRefreshNetwork: () -> Unit,
-    onRefreshWifiDirect: () -> Unit
+    onRefreshWifiDirect: () -> Unit,
+    onDisconnectRouterWifi: () -> Unit
 ) {
     when (selectedTransport) {
         ConnectionTransportMode.LOCAL_NETWORK -> {
@@ -431,39 +444,51 @@ private fun ClientModeContent(
                 snapshot = networkSnapshot,
                 onRefresh = onRefreshNetwork
             )
-        }
-
-        ConnectionTransportMode.WIFI_DIRECT -> {
-            WifiDirectStatusCard(state = wifiDirectState)
             Spacer(modifier = Modifier.height(12.dp))
-            if (!wifiDirectChecks.ready) {
-                WifiDirectPrerequisitesCard(
-                    checks = wifiDirectChecks,
-                    onRequestPermission = onRequestWifiDirectPermission,
-                    onOpenWifiSettings = onOpenWifiSettings,
-                    onOpenLocationSettings = onOpenLocationSettings
-                )
-                return
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            StatusCard(title = stringResource(R.string.wifi_direct_in_local_card_title), icon = Icons.Default.Wifi) {
                 Text(
-                    text = stringResource(R.string.nearby_devices_title),
-                    style = MaterialTheme.typography.titleMedium,
+                    text = stringResource(R.string.wifi_direct_in_local_card_desc),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedButton(onClick = onRefreshWifiDirect) {
-                    Text(stringResource(R.string.refresh_network_info))
+                Spacer(modifier = Modifier.height(10.dp))
+                WifiDirectStatusCard(state = wifiDirectState)
+                Spacer(modifier = Modifier.height(10.dp))
+                if (!wifiDirectChecks.ready) {
+                    WifiDirectPrerequisitesCard(
+                        checks = wifiDirectChecks,
+                        wifiDirectState = wifiDirectState,
+                        onRequestPermission = onRequestWifiDirectPermission,
+                        onOpenWifiSettings = onOpenWifiSettings,
+                        onOpenLocationSettings = onOpenLocationSettings,
+                        onDisconnectRouterWifi = onDisconnectRouterWifi
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onRefreshWifiDirect,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(stringResource(R.string.wifi_direct_search_button))
+                        }
+                        OutlinedButton(
+                            onClick = onDisconnectRouterWifi,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(stringResource(R.string.wifi_direct_disconnect_router))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    DeviceList(
+                        devices = wifiDirectDiscoveredDevices,
+                        emptyLabel = stringResource(R.string.wifi_direct_no_peers),
+                        onSelectDevice = onSelectDevice
+                    )
                 }
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            DeviceList(
-                devices = discoveredDevices,
-                onSelectDevice = onSelectDevice
-            )
         }
 
         ConnectionTransportMode.INTERNET -> {
@@ -475,6 +500,7 @@ private fun ClientModeContent(
                 )
             }
         }
+        ConnectionTransportMode.WIFI_DIRECT -> Unit
     }
 }
 
@@ -489,7 +515,9 @@ private fun HostModeContent(
     onOpenWifiSettings: () -> Unit,
     onOpenLocationSettings: () -> Unit,
     onRefreshNetwork: () -> Unit,
-    onRetryWifiDirectHosting: () -> Unit
+    onRetryWifiDirectHosting: () -> Unit,
+    onStopWifiDirectHosting: () -> Unit,
+    onDisconnectRouterWifi: () -> Unit
 ) {
     when (selectedTransport) {
         ConnectionTransportMode.LOCAL_NETWORK -> {
@@ -530,26 +558,54 @@ private fun HostModeContent(
                 snapshot = networkSnapshot,
                 onRefresh = onRefreshNetwork
             )
-        }
-
-        ConnectionTransportMode.WIFI_DIRECT -> {
-            WifiDirectStatusCard(state = wifiDirectState)
             Spacer(modifier = Modifier.height(12.dp))
-            if (!wifiDirectChecks.ready) {
-                WifiDirectPrerequisitesCard(
-                    checks = wifiDirectChecks,
-                    onRequestPermission = onRequestWifiDirectPermission,
-                    onOpenWifiSettings = onOpenWifiSettings,
-                    onOpenLocationSettings = onOpenLocationSettings
+            StatusCard(title = stringResource(R.string.wifi_direct_in_local_card_title), icon = Icons.Default.Wifi) {
+                Text(
+                    text = stringResource(R.string.wifi_direct_host_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                return
-            }
-            OutlinedButton(
-                onClick = onRetryWifiDirectHosting,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(stringResource(R.string.retry_wifi_direct_group))
+                Spacer(modifier = Modifier.height(10.dp))
+                WifiDirectStatusCard(state = wifiDirectState)
+                Spacer(modifier = Modifier.height(10.dp))
+                if (!wifiDirectChecks.ready) {
+                    WifiDirectPrerequisitesCard(
+                        checks = wifiDirectChecks,
+                        wifiDirectState = wifiDirectState,
+                        onRequestPermission = onRequestWifiDirectPermission,
+                        onOpenWifiSettings = onOpenWifiSettings,
+                        onOpenLocationSettings = onOpenLocationSettings,
+                        onDisconnectRouterWifi = onDisconnectRouterWifi
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onRetryWifiDirectHosting,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.retry_wifi_direct_group))
+                        }
+                        OutlinedButton(
+                            onClick = onStopWifiDirectHosting,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.stop_hosting))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onDisconnectRouterWifi,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(stringResource(R.string.wifi_direct_disconnect_router))
+                    }
+                }
             }
         }
 
@@ -562,12 +618,14 @@ private fun HostModeContent(
                 )
             }
         }
+        ConnectionTransportMode.WIFI_DIRECT -> Unit
     }
 }
 
 @Composable
 private fun DeviceList(
     devices: List<Device>,
+    emptyLabel: String? = null,
     onSelectDevice: (Device) -> Unit
 ) {
     if (devices.isEmpty()) {
@@ -578,7 +636,15 @@ private fun DeviceList(
                 .height(220.dp)
                 .padding(32.dp)
         ) {
-            CircularProgressIndicator()
+            if (emptyLabel.isNullOrBlank()) {
+                CircularProgressIndicator()
+            } else {
+                Text(
+                    text = emptyLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         return
     }
@@ -634,9 +700,11 @@ private fun WifiDirectStatusCard(state: WifiDirectState) {
 @Composable
 private fun WifiDirectPrerequisitesCard(
     checks: WifiDirectSystemChecks,
+    wifiDirectState: WifiDirectState,
     onRequestPermission: () -> Unit,
     onOpenWifiSettings: () -> Unit,
-    onOpenLocationSettings: () -> Unit
+    onOpenLocationSettings: () -> Unit,
+    onDisconnectRouterWifi: () -> Unit
 ) {
     StatusCard(title = stringResource(R.string.wifi_direct_requirements_title)) {
         Text(
@@ -671,6 +739,18 @@ private fun WifiDirectPrerequisitesCard(
                 color = if (checks.locationEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
             )
         }
+        Text(
+            text = if (wifiDirectState.infrastructureWifiConnected) {
+                stringResource(R.string.wifi_direct_requirement_router_connected)
+            } else {
+                stringResource(R.string.wifi_direct_requirement_router_disconnected)
+            },
+            color = if (wifiDirectState.infrastructureWifiConnected) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.primary
+            }
+        )
         Spacer(modifier = Modifier.height(12.dp))
         if (!checks.hasPermission) {
             OutlinedButton(onClick = onRequestPermission, modifier = Modifier.fillMaxWidth()) {
@@ -687,6 +767,12 @@ private fun WifiDirectPrerequisitesCard(
         if (checks.locationRequired && !checks.locationEnabled) {
             OutlinedButton(onClick = onOpenLocationSettings, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.wifi_direct_open_location_settings))
+            }
+        }
+        if (wifiDirectState.infrastructureWifiConnected) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(onClick = onDisconnectRouterWifi, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.wifi_direct_disconnect_router))
             }
         }
     }
@@ -1026,7 +1112,7 @@ enum class PairConnectionState {
 private fun ConnectionTransportMode.toLabelRes(): Int {
     return when (this) {
         ConnectionTransportMode.LOCAL_NETWORK -> R.string.transport_local_network_label
-        ConnectionTransportMode.WIFI_DIRECT -> R.string.transport_wifi_direct_label
+        ConnectionTransportMode.WIFI_DIRECT -> R.string.transport_local_network_label
         ConnectionTransportMode.INTERNET -> R.string.transport_internet_label
     }
 }

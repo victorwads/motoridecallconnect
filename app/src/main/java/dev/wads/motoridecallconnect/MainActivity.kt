@@ -361,6 +361,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         super.onResume()
         if (pairingViewModel.isHosting.value) {
             pairingViewModel.stopDiscovery()
+            pairingViewModel.stopWifiDirectDiscovery()
         } else {
             pairingViewModel.startDiscovery()
         }
@@ -370,7 +371,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         super.onPause()
         val autoConnectEnabled = settingsViewModel.uiState.value.autoConnectNearbyFriends
         val hosting = pairingViewModel.isHosting.value
-        if (!autoConnectEnabled || hosting) {
+        if (!autoConnectEnabled && !hosting) {
             pairingViewModel.stopDiscovery()
         }
     }

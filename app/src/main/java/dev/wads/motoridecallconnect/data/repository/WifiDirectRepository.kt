@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.NetworkInfo
 import android.net.wifi.WpsInfo
+import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pGroup
@@ -54,7 +55,8 @@ class WifiDirectRepository(context: Context) {
     private val _state = MutableStateFlow(
         WifiDirectState(
             supported = wifiP2pManager != null,
-            enabled = false
+            enabled = false,
+            infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()
         )
     )
     val state: StateFlow<WifiDirectState> = _state.asStateFlow()
@@ -88,6 +90,7 @@ class WifiDirectRepository(context: Context) {
                     _state.update {
                         it.copy(
                             enabled = enabled,
+                            infrastructureWifiConnected = isInfrastructureWifiConnectedInternal(),
                             failureMessage = if (enabled) null else "Wi-Fi Direct desativado no sistema."
                         )
                     }
@@ -110,6 +113,7 @@ class WifiDirectRepository(context: Context) {
                                 groupFormed = false,
                                 groupOwner = false,
                                 groupOwnerIp = null,
+                                infrastructureWifiConnected = isInfrastructureWifiConnectedInternal(),
                                 connecting = false
                             )
                         }
@@ -134,6 +138,7 @@ class WifiDirectRepository(context: Context) {
             return
         }
         ensureReceiverRegistered()
+        _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
         _state.update { it.copy(discovering = true, failureMessage = null) }
         runCatching {
             manager.discoverPeers(currentChannel, object : WifiP2pManager.ActionListener {
@@ -195,6 +200,7 @@ class WifiDirectRepository(context: Context) {
             return
         }
         ensureReceiverRegistered()
+        _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
         _state.update { it.copy(connecting = true, failureMessage = null) }
         runCatching {
             manager.createGroup(currentChannel, object : WifiP2pManager.ActionListener {
@@ -240,7 +246,8 @@ class WifiDirectRepository(context: Context) {
                             connected = false,
                             groupFormed = false,
                             groupOwner = false,
-                            groupOwnerIp = null
+                            groupOwnerIp = null,
+                            infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()
                         )
                     }
                     Log.i(TAG, "Wi-Fi Direct group removed.")
@@ -284,6 +291,7 @@ class WifiDirectRepository(context: Context) {
 
         return withContext(Dispatchers.Main.immediate) {
             ensureReceiverRegistered()
+            _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
             _state.update { it.copy(connecting = true, failureMessage = null) }
             pendingConnect?.complete(Result.failure(IllegalStateException("Nova conexão iniciada.")))
             val deferred = CompletableDeferred<Result<Device>>()
@@ -356,9 +364,24 @@ class WifiDirectRepository(context: Context) {
 
     fun refreshState() {
         ensureReceiverRegistered()
+        _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
         requestPeersInternal()
         requestConnectionInfoInternal()
         requestGroupInfoInternal()
+    }
+
+    fun disconnectInfrastructureWifi(): Boolean {
+        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return false
+        val result = runCatching {
+            @Suppress("DEPRECATION")
+            wifiManager.disconnect()
+        }.getOrDefault(false)
+        _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
+        if (!result) {
+            Log.w(TAG, "Failed to disconnect infrastructure Wi-Fi automatically.")
+        }
+        return result
     }
 
     fun tearDown() {
@@ -381,7 +404,8 @@ class WifiDirectRepository(context: Context) {
                 connected = info.groupFormed,
                 groupFormed = info.groupFormed,
                 groupOwner = info.isGroupOwner,
-                groupOwnerIp = ownerIp
+                groupOwnerIp = ownerIp,
+                infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()
             )
         }
 
@@ -494,6 +518,17 @@ class WifiDirectRepository(context: Context) {
             WifiP2pManager.ERROR -> "erro interno"
             else -> "motivo desconhecido ($reason)"
         }
+    }
+
+    private fun isInfrastructureWifiConnectedInternal(): Boolean {
+        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return false
+        return runCatching {
+            @Suppress("DEPRECATION")
+            val connectionInfo = wifiManager.connectionInfo ?: return@runCatching false
+            val hasKnownSsid = !connectionInfo.ssid.isNullOrBlank() && connectionInfo.ssid != "<unknown ssid>"
+            connectionInfo.networkId != -1 && hasKnownSsid
+        }.getOrDefault(false)
     }
 
     @Suppress("DEPRECATION")
