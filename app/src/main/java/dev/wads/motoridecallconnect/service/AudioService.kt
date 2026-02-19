@@ -339,22 +339,29 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 // for the default network. We must explicitly bind the socket to the WiFi network
                 // to reach the local IP of the Hotspot host.
                 val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val wifiNetwork = connectivityManager.allNetworks.firstOrNull { network ->
+                val allNetworks = connectivityManager.allNetworks.toList()
+                val wifiNetworks = allNetworks.filter { network ->
                     val capabilities = connectivityManager.getNetworkCapabilities(network)
                     capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
                 }
+                val fallbackNetworks = allNetworks.filterNot { wifiNetworks.contains(it) }
+                val networkCandidates = buildList<android.net.Network?> {
+                    addAll(wifiNetworks)
+                    addAll(fallbackNetworks)
+                    add(null) // final fallback to default network routing.
+                }.distinct()
 
-                if (wifiNetwork != null) {
-                    Log.i(TAG, "Binding signaling socket to WiFi network: $wifiNetwork")
+                if (wifiNetworks.isNotEmpty()) {
+                    Log.i(TAG, "Will try ${wifiNetworks.size} WiFi network(s) first for signaling socket.")
                 } else {
-                    Log.w(TAG, "No WiFi network found for signaling socket. Using default.")
+                    Log.w(TAG, "No explicit WiFi network found for signaling socket. Will use all available networks.")
                 }
 
                 Log.i(
                     TAG,
                     "Connecting using candidate IPs=${candidateIpStrings.joinToString()} port=${device.port}"
                 )
-                signalingClient.connectToPeer(candidateAddresses, device.port, wifiNetwork)
+                signalingClient.connectToPeer(candidateAddresses, device.port, networkCandidates)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to resolve/connect peer candidates for port ${device.port}", t)
                 connectionStatus = ConnectionStatus.ERROR

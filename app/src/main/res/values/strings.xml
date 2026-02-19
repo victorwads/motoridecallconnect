@@ -40,6 +40,9 @@
     
     <!-- Pairing Screen -->
     <string name="pairing_title">Pairing</string>
+    <string name="transport_local_network_label">Local Network</string>
+    <string name="transport_wifi_direct_label">Wi-Fi Direct</string>
+    <string name="transport_internet_label">Internet</string>
     <string name="client_mode_tab">Client</string>
     <string name="host_mode_tab">Host</string>
     <string name="quick_pair_tab">Quick Pair</string>
@@ -57,6 +60,7 @@
     <string name="connecting">Connecting...</string>
     <string name="connected">Connected!</string>
     <string name="connection_failed">Connection failed. Check both devices and try again.</string>
+    <string name="connection_error_title">Connection issue</string>
     <string name="pairing_code_title">Code Pairing</string>
     <string name="pairing_code_instructions">Enter the code displayed on the other device screen.</string>
     <string name="pairing_code_label">Pairing code</string>
@@ -195,6 +199,24 @@
     <string name="usage_other_bike_desc">Bike-to-bike communication in convoy (range limited by Wi-Fi).</string>
     <string name="host_mode_label">Host Mode</string>
     <string name="be_host_description">Make your device discoverable on the network</string>
+    <string name="internet_mode_future_desc">This mode is planned for remote WebRTC over internet using friend presence in Firebase.</string>
+    <string name="wifi_direct_not_supported">Wi-Fi Direct is not supported on this device.</string>
+    <string name="wifi_direct_system_disabled">Enable Wi-Fi Direct/Wi-Fi in system settings.</string>
+    <string name="wifi_direct_searching">Searching nearby peers...</string>
+    <string name="wifi_direct_group_owner_ip">Group owner IP: %1$s</string>
+    <string name="wifi_direct_requirements_title">Wi-Fi Direct requirements</string>
+    <string name="wifi_direct_requirements_desc">To use Wi-Fi Direct, grant permissions and keep Wi-Fi (and location on older Android versions) enabled.</string>
+    <string name="wifi_direct_requirement_permissions_ok">Permissions: OK</string>
+    <string name="wifi_direct_requirement_permissions_missing">Permissions: missing</string>
+    <string name="wifi_direct_requirement_wifi_ok">Wi-Fi: ON</string>
+    <string name="wifi_direct_requirement_wifi_missing">Wi-Fi: OFF</string>
+    <string name="wifi_direct_requirement_location_ok">Location: ON</string>
+    <string name="wifi_direct_requirement_location_missing">Location: OFF</string>
+    <string name="wifi_direct_grant_permissions">Grant Wi-Fi Direct permissions</string>
+    <string name="wifi_direct_open_wifi_settings">Open Wi-Fi settings</string>
+    <string name="wifi_direct_open_location_settings">Open location settings</string>
+    <string name="wifi_direct_endpoint_pending">Wi-Fi Direct endpoint will be resolved on connect</string>
+    <string name="retry_wifi_direct_group">Recreate Wi-Fi Direct group</string>
     <string name="show_qr_code">Show QR Code</string>
     <string name="scan_qr_code">Scan QR Code</string>
     <string name="camera_permission_title">Camera permission required</string>

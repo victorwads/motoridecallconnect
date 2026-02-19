@@ -75,10 +75,18 @@ class SignalingClient(private val listener: SignalingListener) {
     }
 
     fun connectToPeer(address: InetAddress, port: Int, network: android.net.Network? = null) {
-        connectToPeer(listOf(address), port, network)
+        connectToPeer(listOf(address), port, listOf(network))
     }
 
     fun connectToPeer(addresses: List<InetAddress>, port: Int, network: android.net.Network? = null) {
+        connectToPeer(addresses, port, listOf(network))
+    }
+
+    fun connectToPeer(
+        addresses: List<InetAddress>,
+        port: Int,
+        networks: List<android.net.Network?> = listOf(null)
+    ) {
         connectExecutor.execute {
             if (addresses.isEmpty()) {
                 val error = IllegalArgumentException("No candidate peer addresses provided.")
@@ -86,20 +94,32 @@ class SignalingClient(private val listener: SignalingListener) {
                 return@execute
             }
 
+            val prioritizedNetworks = networks
+                .ifEmpty { listOf(null) }
+                .distinct()
+
             var lastError: Exception? = null
-            for (address in addresses) {
-                try {
-                    val connectedSocket = createConnectedSocket(address, port, network)
-                    if (!isClosed) {
-                        Log.i(TAG, "Connected to peer using ${address.hostAddress}:$port")
-                        attachSocket(connectedSocket, isInitiator = true)
-                    } else {
-                        connectedSocket.close()
+            for (network in prioritizedNetworks) {
+                for (address in addresses) {
+                    try {
+                        val connectedSocket = createConnectedSocket(address, port, network)
+                        if (!isClosed) {
+                            val networkLabel = network?.toString() ?: "default"
+                            Log.i(TAG, "Connected to peer using ${address.hostAddress}:$port on network=$networkLabel")
+                            attachSocket(connectedSocket, isInitiator = true)
+                        } else {
+                            connectedSocket.close()
+                        }
+                        return@execute
+                    } catch (e: Exception) {
+                        lastError = e
+                        val networkLabel = network?.toString() ?: "default"
+                        Log.w(
+                            TAG,
+                            "Failed to connect to ${address.hostAddress}:$port on network=$networkLabel",
+                            e
+                        )
                     }
-                    return@execute
-                } catch (e: Exception) {
-                    lastError = e
-                    Log.w(TAG, "Failed to connect to ${address.hostAddress}:$port", e)
                 }
             }
 

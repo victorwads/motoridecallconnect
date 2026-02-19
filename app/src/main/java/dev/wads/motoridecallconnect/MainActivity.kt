@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.room.Room
 import dev.wads.motoridecallconnect.data.local.AppDatabase
 import dev.wads.motoridecallconnect.data.repository.TripRepository
+import dev.wads.motoridecallconnect.data.repository.WifiDirectRepository
 import dev.wads.motoridecallconnect.service.AudioService
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     private data class AutoConnectContext(
         val enabled: Boolean,
+        val transportSupportsAutoConnect: Boolean,
         val discoveredDevices: List<Device>,
         val connectionStatus: ConnectionStatus,
         val connectedPeer: Device?,
@@ -68,7 +70,15 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private val repository by lazy { TripRepository { database.tripDao() } }
     private val socialRepository by lazy { dev.wads.motoridecallconnect.data.repository.SocialRepository() }
     private val deviceDiscoveryRepository by lazy { dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository(applicationContext) }
-    private val viewModelFactory by lazy { ViewModelFactory(repository, socialRepository, deviceDiscoveryRepository) }
+    private val wifiDirectRepository by lazy { WifiDirectRepository(applicationContext) }
+    private val viewModelFactory by lazy {
+        ViewModelFactory(
+            repository,
+            socialRepository,
+            deviceDiscoveryRepository,
+            wifiDirectRepository
+        )
+    }
     private val firebaseAuth by lazy { FirebaseAuth.getInstance() }
     private var lastObservedAuthUid: String? = null
 
@@ -398,6 +408,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
             ) { enabled, discoveredDevices, connectionStatus, connectedPeer, isHosting ->
                 AutoConnectContext(
                     enabled = enabled,
+                    transportSupportsAutoConnect = false,
                     discoveredDevices = discoveredDevices,
                     connectionStatus = connectionStatus,
                     connectedPeer = connectedPeer,
@@ -405,6 +416,12 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     friendIds = emptySet()
                 )
             }
+                .combine(pairingViewModel.selectedTransport) { context, selectedTransport ->
+                    context.copy(
+                        transportSupportsAutoConnect =
+                            selectedTransport == dev.wads.motoridecallconnect.data.model.ConnectionTransportMode.LOCAL_NETWORK
+                    )
+                }
                 .combine(friendIdsState) { context, friendIds ->
                     context.copy(friendIds = friendIds)
                 }
@@ -442,7 +459,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     }
 
     private fun maybeAutoConnectNearbyFriend(context: AutoConnectContext) {
-        if (!context.enabled || context.isHosting) {
+        if (!context.enabled || !context.transportSupportsAutoConnect || context.isHosting) {
             return
         }
         if (context.connectionStatus == ConnectionStatus.CONNECTED || context.connectionStatus == ConnectionStatus.CONNECTING) {

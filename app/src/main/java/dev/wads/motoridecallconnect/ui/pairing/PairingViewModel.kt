@@ -1,20 +1,37 @@
 package dev.wads.motoridecallconnect.ui.pairing
 
+import android.os.Build
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
+import dev.wads.motoridecallconnect.data.model.ConnectionTransportMode
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.model.WifiDirectState
 import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
+import dev.wads.motoridecallconnect.data.repository.WifiDirectRepository
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.utils.NetworkUtils
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-class PairingViewModel(private val repository: DeviceDiscoveryRepository) : ViewModel() {
+class PairingViewModel(
+    private val localRepository: DeviceDiscoveryRepository,
+    private val wifiDirectRepository: WifiDirectRepository
+) : ViewModel() {
 
-    val discoveredDevices: StateFlow<List<Device>> = repository.discoveredDevices
+    private val _selectedTransport = MutableStateFlow(ConnectionTransportMode.LOCAL_NETWORK)
+    val selectedTransport: StateFlow<ConnectionTransportMode> = _selectedTransport.asStateFlow()
+
+    private val _discoveredDevices = MutableStateFlow<List<Device>>(emptyList())
+    val discoveredDevices: StateFlow<List<Device>> = _discoveredDevices.asStateFlow()
 
     private val _isHosting = MutableStateFlow(false)
     val isHosting: StateFlow<Boolean> = _isHosting.asStateFlow()
@@ -27,44 +44,129 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
+
     private val _connectedPeer = MutableStateFlow<Device?>(null)
     val connectedPeer: StateFlow<Device?> = _connectedPeer.asStateFlow()
+
     private val _networkSnapshot = MutableStateFlow(NetworkUtils.getNetworkSnapshot())
     val networkSnapshot: StateFlow<NetworkUtils.NetworkSnapshot> = _networkSnapshot.asStateFlow()
 
+    private val _wifiDirectState = MutableStateFlow(WifiDirectState(supported = true))
+    val wifiDirectState: StateFlow<WifiDirectState> = _wifiDirectState.asStateFlow()
+
+    private val _connectionErrorMessage = MutableStateFlow<String?>(null)
+    val connectionErrorMessage: StateFlow<String?> = _connectionErrorMessage.asStateFlow()
+
+    private val _pendingDeviceToConnect = MutableSharedFlow<Device>(extraBufferCapacity = 1)
+    val pendingDeviceToConnect: SharedFlow<Device> = _pendingDeviceToConnect.asSharedFlow()
+
+    private var lastHostDeviceName: String = Build.MODEL
+    private var lastHostPort: Int = DEFAULT_SIGNALING_PORT
+
     init {
         refreshNetworkSnapshot()
+        viewModelScope.launch {
+            combine(
+                localRepository.discoveredDevices,
+                wifiDirectRepository.discoveredDevices,
+                _selectedTransport
+            ) { localDevices, wifiDirectDevices, selectedMode ->
+                when (selectedMode) {
+                    ConnectionTransportMode.LOCAL_NETWORK -> localDevices
+                    ConnectionTransportMode.WIFI_DIRECT -> wifiDirectDevices
+                    ConnectionTransportMode.INTERNET -> emptyList()
+                }
+            }.collect { devices ->
+                _discoveredDevices.value = devices
+            }
+        }
+        viewModelScope.launch {
+            wifiDirectRepository.state.collect { state ->
+                _wifiDirectState.value = state
+            }
+        }
+        wifiDirectRepository.refreshState()
+    }
+
+    fun setConnectionTransport(mode: ConnectionTransportMode) {
+        if (_selectedTransport.value == mode) {
+            return
+        }
+        stopDiscovery()
+        stopHosting()
+        _selectedTransport.value = mode
+        _connectionErrorMessage.value = null
+        when (mode) {
+            ConnectionTransportMode.LOCAL_NETWORK -> refreshNetworkSnapshot()
+            ConnectionTransportMode.WIFI_DIRECT -> wifiDirectRepository.refreshState()
+            ConnectionTransportMode.INTERNET -> _discoveredDevices.value = emptyList()
+        }
+        startDiscovery()
+    }
+
+    fun isAutoConnectSupported(): Boolean {
+        return _selectedTransport.value == ConnectionTransportMode.LOCAL_NETWORK
     }
 
     fun startDiscovery() {
         if (_isHosting.value) {
             return
         }
-        refreshNetworkSnapshot()
-        repository.startDiscovery()
+        _connectionErrorMessage.value = null
+        when (_selectedTransport.value) {
+            ConnectionTransportMode.LOCAL_NETWORK -> {
+                refreshNetworkSnapshot()
+                localRepository.startDiscovery()
+            }
+            ConnectionTransportMode.WIFI_DIRECT -> {
+                wifiDirectRepository.startDiscovery()
+            }
+            ConnectionTransportMode.INTERNET -> {
+                _discoveredDevices.value = emptyList()
+            }
+        }
     }
 
     fun stopDiscovery() {
-        repository.stopDiscovery()
+        localRepository.stopDiscovery()
+        wifiDirectRepository.stopDiscovery()
     }
 
-    fun startHosting(deviceName: String, port: Int = 8080) {
-        if (_isHosting.value) {
-            return
+    fun startHosting(deviceName: String, port: Int = DEFAULT_SIGNALING_PORT) {
+        lastHostDeviceName = deviceName
+        lastHostPort = port
+        _connectionErrorMessage.value = null
+        stopDiscovery()
+
+        when (_selectedTransport.value) {
+            ConnectionTransportMode.LOCAL_NETWORK -> {
+                refreshNetworkSnapshot()
+                _isHosting.value = true
+                val userId = FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
+                val registrationName = "$userId|$deviceName"
+                localRepository.registerService(port, registrationName)
+                _qrCodeText.value = buildPairingPayload(
+                    userId = userId,
+                    deviceName = deviceName,
+                    registrationName = registrationName,
+                    port = port,
+                    networkSnapshot = _networkSnapshot.value
+                )
+            }
+
+            ConnectionTransportMode.WIFI_DIRECT -> {
+                _isHosting.value = true
+                _qrCodeText.value = null
+                wifiDirectRepository.startHosting()
+            }
+
+            ConnectionTransportMode.INTERNET -> {
+                _isHosting.value = false
+                _qrCodeText.value = null
+                _connectionErrorMessage.value =
+                    "Modo Internet/WebRTC ainda não está habilitado nesta versão."
+            }
         }
-        refreshNetworkSnapshot()
-        _isHosting.value = true
-        repository.stopDiscovery()
-        val userId = FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
-        val registrationName = "$userId|$deviceName"
-        repository.registerService(port, registrationName)
-        _qrCodeText.value = buildPairingPayload(
-            userId = userId,
-            deviceName = deviceName,
-            registrationName = registrationName,
-            port = port,
-            networkSnapshot = _networkSnapshot.value
-        )
     }
 
     fun stopHosting() {
@@ -73,15 +175,16 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
         }
         _isHosting.value = false
         _qrCodeText.value = null
-        repository.unregisterService()
+        localRepository.unregisterService()
+        wifiDirectRepository.cancelPendingConnection()
+        wifiDirectRepository.stopHosting()
     }
 
-    fun activateHostMode(deviceName: String, port: Int = 8080) {
+    fun activateHostMode(deviceName: String, port: Int = DEFAULT_SIGNALING_PORT) {
         startHosting(deviceName, port)
     }
 
     fun activateClientMode() {
-        refreshNetworkSnapshot()
         stopHosting()
         startDiscovery()
     }
@@ -94,6 +197,58 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
         _connectionStatus.value = status
         _isConnected.value = status == ConnectionStatus.CONNECTED
         _connectedPeer.value = peer
+    }
+
+    fun connectToDevice(device: Device) {
+        _connectionErrorMessage.value = null
+        when (_selectedTransport.value) {
+            ConnectionTransportMode.LOCAL_NETWORK -> {
+                _pendingDeviceToConnect.tryEmit(
+                    device.copy(
+                        connectionTransport = ConnectionTransportMode.LOCAL_NETWORK
+                    )
+                )
+            }
+
+            ConnectionTransportMode.WIFI_DIRECT -> {
+                viewModelScope.launch {
+                    val result = wifiDirectRepository.connectToPeer(
+                        target = device,
+                        port = device.port ?: DEFAULT_SIGNALING_PORT
+                    )
+                    result
+                        .onSuccess { resolvedDevice ->
+                            _pendingDeviceToConnect.emit(
+                                resolvedDevice.copy(
+                                    connectionTransport = ConnectionTransportMode.WIFI_DIRECT
+                                )
+                            )
+                        }
+                        .onFailure { error ->
+                            _connectionErrorMessage.value =
+                                error.message ?: "Falha ao conectar via Wi-Fi Direct."
+                        }
+                }
+            }
+
+            ConnectionTransportMode.INTERNET -> {
+                _connectionErrorMessage.value =
+                    "Modo Internet/WebRTC ainda não está habilitado nesta versão."
+            }
+        }
+    }
+
+    fun clearConnectionErrorMessage() {
+        _connectionErrorMessage.value = null
+    }
+
+    fun cancelPendingConnection() {
+        wifiDirectRepository.cancelPendingConnection()
+    }
+
+    fun restartCurrentHostingIfNeeded() {
+        if (!_isHosting.value) return
+        startHosting(lastHostDeviceName, lastHostPort)
     }
 
     fun handleScannedCode(code: String): Device? {
@@ -127,7 +282,8 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
             deviceName = displayName,
             ip = ip,
             port = port,
-            candidateIps = listOf(ip)
+            candidateIps = listOf(ip),
+            connectionTransport = ConnectionTransportMode.LOCAL_NETWORK
         )
     }
 
@@ -182,7 +338,8 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
                 deviceName = displayName,
                 ip = selectedIp,
                 port = port,
-                candidateIps = normalizedIps
+                candidateIps = normalizedIps,
+                connectionTransport = ConnectionTransportMode.LOCAL_NETWORK
             )
         }.getOrNull()
     }
@@ -255,6 +412,7 @@ class PairingViewModel(private val repository: DeviceDiscoveryRepository) : View
         super.onCleared()
         stopHosting()
         stopDiscovery()
+        wifiDirectRepository.tearDown()
     }
 
     companion object {

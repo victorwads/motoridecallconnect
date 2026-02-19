@@ -1,6 +1,7 @@
 package dev.wads.motoridecallconnect.data.model
 
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.p2p.WifiP2pDevice
 import java.nio.charset.StandardCharsets
 
 data class Device(
@@ -10,9 +11,13 @@ data class Device(
     val rssi: Int = -50, // Signal strength
     val ip: String? = null,
     val port: Int? = null,
-    val candidateIps: List<String> = emptyList()
+    val candidateIps: List<String> = emptyList(),
+    val connectionTransport: ConnectionTransportMode = ConnectionTransportMode.LOCAL_NETWORK,
+    val wifiDirectDeviceAddress: String? = null
 ) {
     companion object {
+        private const val DEFAULT_SIGNALING_PORT = 8080
+
         fun fromNsdServiceInfo(serviceInfo: NsdServiceInfo): Device {
             val rawName = serviceInfo.serviceName
             val parts = rawName.split("|")
@@ -31,7 +36,23 @@ data class Device(
                 deviceName = "Android Device",
                 ip = candidateIps.firstOrNull() ?: hostIp,
                 port = serviceInfo.port,
-                candidateIps = candidateIps
+                candidateIps = candidateIps,
+                connectionTransport = ConnectionTransportMode.LOCAL_NETWORK
+            )
+        }
+
+        fun fromWifiP2pDevice(device: WifiP2pDevice): Device {
+            val displayName = device.deviceName?.trim().takeUnless { it.isNullOrBlank() } ?: "Wi-Fi Direct"
+            val endpointId = device.deviceAddress?.trim().takeUnless { it.isNullOrBlank() } ?: displayName
+            return Device(
+                id = endpointId,
+                name = displayName,
+                deviceName = displayName,
+                ip = null,
+                port = DEFAULT_SIGNALING_PORT,
+                candidateIps = emptyList(),
+                connectionTransport = ConnectionTransportMode.WIFI_DIRECT,
+                wifiDirectDeviceAddress = device.deviceAddress
             )
         }
 
