@@ -3,7 +3,8 @@ package dev.wads.motoridecallconnect.stt.queue
 enum class TranscriptionChunkStatus {
     PENDING,
     PROCESSING,
-    FAILED
+    FAILED,
+    SUCCESS
 }
 
 data class QueuedTranscriptionChunk(
@@ -46,6 +47,8 @@ interface TranscriptionChunkQueue {
     fun markSucceeded(chunkId: String)
 
     fun markFailed(chunkId: String, reason: String)
+
+    fun markRetry(chunkId: String)
 
     fun snapshot(): TranscriptionQueueSnapshot
 }

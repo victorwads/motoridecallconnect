@@ -35,7 +35,9 @@ enum class ConnectionStatus {
 enum class TranscriptQueueItemStatus {
     PENDING,
     PROCESSING,
-    FAILED
+    FAILED,
+
+    SUCCESS,
 }
 
 data class TranscriptQueueItemUi(
@@ -391,6 +393,7 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             TranscriptionChunkStatus.PENDING -> TranscriptQueueItemStatus.PENDING
             TranscriptionChunkStatus.PROCESSING -> TranscriptQueueItemStatus.PROCESSING
             TranscriptionChunkStatus.FAILED -> TranscriptQueueItemStatus.FAILED
+            TranscriptionChunkStatus.SUCCESS -> TranscriptQueueItemStatus.SUCCESS
         }
     }
 

@@ -130,8 +130,14 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 return
             }
 
-            val item = items.removeAt(index)
-            deleteFilesFor(item.id)
+            val current = items[index]
+            val updated = current.copy(
+                status = TranscriptionChunkStatus.SUCCESS,
+                failureReason = null
+            )
+            items[index] = updated
+            writeMetadata(metaFileFor(updated.id), updated)
+            // Keep file for replay as requested
         }
     }
 
@@ -147,6 +153,24 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 status = TranscriptionChunkStatus.FAILED,
                 failureReason = reason.ifBlank { "Unknown STT failure" }
             )
+            items[index] = updated
+            writeMetadata(metaFileFor(updated.id), updated)
+        }
+    }
+
+    override fun markRetry(chunkId: String) {
+        synchronized(lock) {
+            val index = items.indexOfFirst { it.id == chunkId }
+            if (index < 0) {
+                return
+            }
+
+            val current = items[index]
+            val updated = current.copy(
+                status = TranscriptionChunkStatus.PENDING,
+                failureReason = null,
+                attempts = 0
+            ) 
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
         }

@@ -59,7 +59,9 @@ fun AppNavigation(
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onConnectToDevice: (Device) -> Unit,
-    onDisconnectClick: () -> Unit = {}
+    onDisconnectClick: () -> Unit = {},
+    onPlayAudio: ((String) -> Unit)? = null,
+    onRetryTranscription: ((String) -> Unit)? = null
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
@@ -150,7 +152,9 @@ fun AppNavigation(
                 ActiveTripScreen(
                     uiState = uiState,
                     onStartTripClick = onStartTripClick,
-                    onEndTripClick = onEndTripClick
+                    onEndTripClick = onEndTripClick,
+                    onPlayTranscriptAudio = onPlayAudio,
+                    onRetryTranscription = onRetryTranscription
                 )
             }
             composable(Screen.TripHistory.route) {

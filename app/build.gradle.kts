@@ -17,7 +17,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.wads.motoridecallconnect"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -34,6 +34,12 @@ android {
             cmake {
                 cppFlags += "-std=c++17"
             }
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
@@ -98,6 +104,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+
+    // WhisperKit
+    implementation(libs.whisperkit)
+    implementation(libs.qti.qnn.runtime)
+    implementation(libs.qti.qnn.litert.delegate)
     implementation(libs.androidx.compose.icons)
 
     implementation(libs.androidx.lifecycle.runtime.ktx)

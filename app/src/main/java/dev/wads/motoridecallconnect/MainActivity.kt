@@ -251,6 +251,12 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     },
                     onDisconnectClick = {
                         audioService?.disconnect()
+                    },
+                    onPlayAudio = { id ->
+                        audioService?.playTranscriptionChunk(id)
+                    },
+                    onRetryTranscription = { id ->
+                        audioService?.retryTranscription(id)
                     }
                 )
             }

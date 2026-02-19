@@ -21,7 +21,8 @@ import dev.wads.motoridecallconnect.R
 enum class TranscriptQueueViewStatus {
     PENDING,
     PROCESSING,
-    FAILED
+    FAILED,
+    SUCCESS,
 }
 
 data class TranscriptQueueViewItem(
@@ -38,7 +39,9 @@ fun TripTranscriptPanel(
     queueStatusText: String? = null,
     queueItems: List<TranscriptQueueViewItem> = emptyList(),
     maxTranscriptItems: Int = 50,
-    maxQueueItems: Int = 10
+    maxQueueItems: Int = 10,
+    onPlayAudio: ((String) -> Unit)? = null,
+    onRetry: ((String) -> Unit)? = null
 ) {
     androidx.compose.foundation.layout.Column(
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -60,7 +63,9 @@ fun TripTranscriptPanel(
         TranscriptFeed(
             items = transcriptItems,
             emptyText = emptyText,
-            maxItems = maxTranscriptItems
+            maxItems = maxTranscriptItems,
+            onPlayAudio = onPlayAudio,
+            onRetry = onRetry
         )
     }
 }
@@ -74,6 +79,7 @@ private fun TranscriptQueueLine(item: TranscriptQueueViewItem) {
         TranscriptQueueViewStatus.PENDING -> androidx.compose.ui.res.stringResource(R.string.transcription_item_pending)
         TranscriptQueueViewStatus.PROCESSING -> androidx.compose.ui.res.stringResource(R.string.transcription_item_processing)
         TranscriptQueueViewStatus.FAILED -> androidx.compose.ui.res.stringResource(R.string.transcription_item_failed)
+        TranscriptQueueViewStatus.SUCCESS -> "" // TODO: Replace with actual string
     }
 
     Row(
@@ -106,6 +112,7 @@ private fun TranscriptQueueLine(item: TranscriptQueueViewItem) {
                     )
                 }
                 TranscriptQueueViewStatus.PENDING -> Unit
+                TranscriptQueueViewStatus.SUCCESS -> Unit
             }
             Text(
                 text = statusLabel,
@@ -114,6 +121,7 @@ private fun TranscriptQueueLine(item: TranscriptQueueViewItem) {
                     TranscriptQueueViewStatus.FAILED -> MaterialTheme.colorScheme.error
                     TranscriptQueueViewStatus.PROCESSING -> MaterialTheme.colorScheme.primary
                     TranscriptQueueViewStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
+                    TranscriptQueueViewStatus.SUCCESS -> MaterialTheme.colorScheme.onSurface
                 }
             )
         }

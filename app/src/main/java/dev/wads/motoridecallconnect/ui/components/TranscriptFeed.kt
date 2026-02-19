@@ -6,7 +6,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -39,6 +41,10 @@ import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.repository.UserRepository
 
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.IconButton
+
 data class TranscriptFeedItem(
     val id: String,
     val authorId: String?,
@@ -53,7 +59,9 @@ data class TranscriptFeedItem(
 fun TranscriptFeed(
     items: List<TranscriptFeedItem>,
     emptyText: String,
-    maxItems: Int = 50
+    maxItems: Int = 50,
+    onPlayAudio: ((String) -> Unit)? = null,
+    onRetry: ((String) -> Unit)? = null
 ) {
     if (items.isEmpty()) {
         Text(
@@ -67,15 +75,24 @@ fun TranscriptFeed(
     val visibleItems = if (items.size > maxItems) items.takeLast(maxItems) else items
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         visibleItems.forEach { item ->
-            TranscriptFeedLine(item = item)
+            TranscriptFeedLine(
+                item = item,
+                onPlayAudio = onPlayAudio,
+                onRetry = onRetry
+            )
         }
     }
 }
 
 @Composable
-private fun TranscriptFeedLine(item: TranscriptFeedItem) {
+private fun TranscriptFeedLine(
+    item: TranscriptFeedItem,
+    onPlayAudio: ((String) -> Unit)? = null,
+    onRetry: ((String) -> Unit)? = null
+) {
     val localUser = FirebaseAuth.getInstance().currentUser
     val localUid = localUser?.uid
+    val isLocal = !localUid.isNullOrBlank() && localUid == item.authorId
     val photoOverride = if (!localUid.isNullOrBlank() && localUid == item.authorId) {
         localUser.photoUrl?.toString()
     } else {
@@ -94,6 +111,111 @@ private fun TranscriptFeedLine(item: TranscriptFeedItem) {
         item.status == TranscriptStatus.PROCESSING -> stringResource(R.string.transcript_status_processing_short)
         item.status == TranscriptStatus.ERROR -> stringResource(R.string.transcript_status_error_short)
         else -> ""
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Transparent)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        // ... (existing content logic needs to be careful here)
+        // I'll rewrite the Row content
+        Row(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+           // Avatar
+           Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (photoOverride != null) {
+                    AsyncImage(
+                        model = photoOverride,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.padding(4.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
+            Column {
+                 Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isLocal) "You" else item.authorName,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = timeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Text(
+                    text = displayText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = lineColor
+                )
+            }
+        }
+        
+        // Actions
+        if (isLocal) {
+            Row(
+                 horizontalArrangement = Arrangement.End,
+                 verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Play button
+                if (item.status == TranscriptStatus.SUCCESS || item.status == TranscriptStatus.ERROR) {
+                     IconButton(
+                        onClick = { onPlayAudio?.invoke(item.id) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Play",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                
+                // Retry button
+                if (item.status == TranscriptStatus.ERROR) {
+                    IconButton(
+                        onClick = { onRetry?.invoke(item.id) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                         Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Retry",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 
     Row(
@@ -150,6 +272,44 @@ private fun TranscriptFeedLine(item: TranscriptFeedItem) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+        }
+        
+        // Actions
+        if (isLocal) {
+            Row(
+                 horizontalArrangement = Arrangement.End,
+                 verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Play button
+                if (item.status == TranscriptStatus.SUCCESS || item.status == TranscriptStatus.ERROR) {
+                     IconButton(
+                        onClick = { onPlayAudio?.invoke(item.id) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Play",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                
+                // Retry button
+                if (item.status == TranscriptStatus.ERROR) {
+                    IconButton(
+                        onClick = { onRetry?.invoke(item.id) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                         Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Retry",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
             }
         }
     }

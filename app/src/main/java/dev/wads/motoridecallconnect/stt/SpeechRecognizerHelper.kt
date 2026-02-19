@@ -1,5 +1,7 @@
 package dev.wads.motoridecallconnect.stt
 
+import android.content.Context
+import android.content.Intent
 import android.media.AudioFormat
 import android.os.Build
 import android.os.Bundle
@@ -18,8 +20,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import android.content.Context
-import android.content.Intent
+import java.nio.ByteBuffer
+import kotlinx.coroutines.launch
 
 class SpeechRecognizerHelper(
     private val context: Context,
@@ -47,6 +49,11 @@ class SpeechRecognizerHelper(
     private val whisperLib = WhisperLib(context)
     private val whisperLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
+
+    private var whisperKitWrapper: WhisperKitWrapper? = null
+    private var isUsingWhisperKit = false
+    private var isWhisperKitInitializing = false
 
     private var selectedModel: WhisperModelOption =
         WhisperModelCatalog.findById(initialModelId) ?: WhisperModelCatalog.defaultOption
@@ -295,6 +302,10 @@ class SpeechRecognizerHelper(
                 Log.i(TAG, "Whisper context released.")
             }
         }
+        if (isUsingWhisperKit) {
+            whisperKitWrapper?.release()
+            isUsingWhisperKit = false
+        }
         Log.d(TAG, "Stopped listening.")
     }
 
@@ -335,9 +346,17 @@ class SpeechRecognizerHelper(
             }
         }
 
+        if (selectedEngine == SttEngine.WHISPER_KIT && !isUsingWhisperKit) {
+            checkAndInitWhisperKit()
+        }
+
         val shouldUseWhisper = selectedEngine == SttEngine.WHISPER && isUsingWhisper
         if (shouldUseWhisper) {
             return processWhisperChunk(data)
+        }
+
+        if (selectedEngine == SttEngine.WHISPER_KIT) {
+            return processWhisperKitChunk(data)
         }
 
         if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -353,6 +372,61 @@ class SpeechRecognizerHelper(
         }
 
         return processNativeChunk(data)
+    }
+
+    private fun checkAndInitWhisperKit() {
+        if (isUsingWhisperKit || isWhisperKitInitializing) return
+        
+        isWhisperKitInitializing = true
+        if (whisperKitWrapper == null) {
+            whisperKitWrapper = WhisperKitWrapper(context)
+        }
+
+        scope.launch {
+            // Map model ID or use a default compatible with WhisperKit
+            val model = if (selectedModel.id.contains("tiny")) "openai/whisper-tiny.en" else "openai/whisper-base.en" // Mapping logic needed?
+            val success = whisperKitWrapper?.initialize(model) == true
+            isUsingWhisperKit = success
+            isWhisperKitInitializing = false
+            if (success) {
+                Log.i(TAG, "WhisperKit initialized successfully")
+            } else {
+                Log.e(TAG, "WhisperKit initialization failed")
+            }
+        }
+    }
+
+    private fun processWhisperKitChunk(data: ByteArray): ChunkTranscriptionResult {
+        // Ensure 16kHz conversion because AudioService sends 48kHz
+        val sampleCount48k = data.size / 2
+        val pcm48k = FloatArray(sampleCount48k)
+        for (i in pcm48k.indices) {
+            val sample = ((data[i * 2 + 1].toInt() shl 8) or (data[i * 2].toInt() and 0xFF)).toShort()
+            val normalized = sample.toFloat() / 32768.0f
+            pcm48k[i] = normalized
+        }
+        val pcm16k = downsampleToWhisperRate(pcm48k)
+        
+        // Convert back to ByteArray PCM 16bit 16kHz for WhisperKit if needed
+        // Or if WhisperKit supports floats, use that. Our wrapper takes ByteArray.
+        // Let's convert float array back to PCM 16bit byte array.
+        val buffer = ByteBuffer.allocate(pcm16k.size * 2)
+        buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (sample in pcm16k) {
+            val shortSample = (sample * 32767).toInt().coerceIn(-32768, 32767).toShort()
+            buffer.putShort(shortSample)
+        }
+        val pcm16kBytes = buffer.array()
+
+        val text = kotlinx.coroutines.runBlocking {
+            whisperKitWrapper?.transcribe(pcm16kBytes)
+        }
+        
+        if (!text.isNullOrBlank()) {
+             return ChunkTranscriptionResult(text = text)
+        }
+        
+        return ChunkTranscriptionResult()
     }
 
     private fun startLegacyNativeRecognizer() {

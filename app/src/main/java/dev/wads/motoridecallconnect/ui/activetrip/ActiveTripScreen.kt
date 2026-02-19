@@ -63,7 +63,9 @@ import dev.wads.motoridecallconnect.ui.components.StatusCard
 fun ActiveTripScreen(
     uiState: ActiveTripUiState,
     onStartTripClick: () -> Unit,
-    onEndTripClick: () -> Unit
+    onEndTripClick: () -> Unit,
+    onPlayTranscriptAudio: ((String) -> Unit)? = null,
+    onRetryTranscription: ((String) -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -209,7 +211,9 @@ fun ActiveTripScreen(
                         )
                     },
                     maxTranscriptItems = 10,
-                    maxQueueItems = 10
+                    maxQueueItems = 10,
+                    onPlayAudio = onPlayTranscriptAudio,
+                    onRetry = onRetryTranscription
                 )
             }
         }
@@ -223,6 +227,7 @@ private fun TranscriptQueueItemStatus.toViewStatus(): TranscriptQueueViewStatus 
         TranscriptQueueItemStatus.PENDING -> TranscriptQueueViewStatus.PENDING
         TranscriptQueueItemStatus.PROCESSING -> TranscriptQueueViewStatus.PROCESSING
         TranscriptQueueItemStatus.FAILED -> TranscriptQueueViewStatus.FAILED
+        TranscriptQueueItemStatus.SUCCESS -> TranscriptQueueViewStatus.SUCCESS
     }
 }
 

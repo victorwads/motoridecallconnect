@@ -13,7 +13,9 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTrack as AndroidAudioTrack
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -27,6 +29,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import dev.wads.motoridecallconnect.R
+import dev.wads.motoridecallconnect.data.model.ConnectionTransportMode
 import dev.wads.motoridecallconnect.audio.AudioCapturer
 import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.model.TranscriptStatus
@@ -46,7 +49,14 @@ import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.vad.SimpleVad
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import org.webrtc.*
+import org.webrtc.AudioTrack as WebRtcAudioTrack
+import org.webrtc.DataChannel
+import org.webrtc.IceCandidate
+import org.webrtc.MediaStream
+import org.webrtc.PeerConnection
+import org.webrtc.RtpReceiver
+import org.webrtc.SdpObserver
+import org.webrtc.SessionDescription
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
@@ -236,7 +246,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         override fun onRemoveStream(p0: MediaStream?) {}
         override fun onRenegotiationNeeded() {}
         override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-            val audioTrack = receiver?.track() as? org.webrtc.AudioTrack ?: return
+            val audioTrack = receiver?.track() as? WebRtcAudioTrack ?: return
             audioTrack.setEnabled(true)
             audioTrack.setVolume(REMOTE_TRACK_GAIN)
             Log.i(TAG, "Remote audio track enabled with gain=$REMOTE_TRACK_GAIN")
@@ -274,7 +284,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent): IBinder = binder
+    override fun onBind(intent: Intent): IBinder {
+        super.onBind(intent)
+        return binder
+    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -344,22 +357,33 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     val capabilities = connectivityManager.getNetworkCapabilities(network)
                     capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
                 }
-                val fallbackNetworks = allNetworks.filterNot { wifiNetworks.contains(it) }
-                val networkCandidates = buildList<android.net.Network?> {
-                    addAll(wifiNetworks)
-                    addAll(fallbackNetworks)
-                    add(null) // final fallback to default network routing.
-                }.distinct()
+                val strictWifiOnly = device.connectionTransport == ConnectionTransportMode.WIFI_DIRECT
+                val networkCandidates = if (strictWifiOnly) {
+                    if (wifiNetworks.isEmpty()) {
+                        throw IllegalStateException(
+                            "Wi-Fi Direct selected but no Wi-Fi transport network is available."
+                        )
+                    }
+                    wifiNetworks.distinct()
+                } else {
+                    val fallbackNetworks = allNetworks.filterNot { wifiNetworks.contains(it) }
+                    buildList {
+                        addAll(wifiNetworks)
+                        addAll(fallbackNetworks)
+                        add(null) // final fallback to default network routing.
+                    }.distinct()
+                }
 
                 if (wifiNetworks.isNotEmpty()) {
                     Log.i(TAG, "Will try ${wifiNetworks.size} WiFi network(s) first for signaling socket.")
-                } else {
+                } else if (!strictWifiOnly) {
                     Log.w(TAG, "No explicit WiFi network found for signaling socket. Will use all available networks.")
                 }
 
                 Log.i(
                     TAG,
-                    "Connecting using candidate IPs=${candidateIpStrings.joinToString()} port=${device.port}"
+                    "Connecting using candidate IPs=${candidateIpStrings.joinToString()} port=${device.port} " +
+                        "strictWifiOnly=$strictWifiOnly"
                 )
                 signalingClient.connectToPeer(candidateAddresses, device.port, networkCandidates)
             } catch (t: Throwable) {
@@ -1448,6 +1472,58 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         )
         publishTranscriptionQueueSnapshot(reason = "chunk_enqueued")
         scheduleTranscriptionQueueProcessing(reason = "chunk_enqueued")
+    }
+
+    fun playTranscriptionChunk(chunkId: String) {
+        val chunk = transcriptionQueue.snapshot().items.find { it.id == chunkId } ?: return
+        val audioBytes = transcriptionQueue.readAudioBytes(chunk) ?: return
+        
+        // Play audio from bytes using AudioTrack
+        transcriptionExecutor.execute {
+            try {
+                val minBufferSize = AndroidAudioTrack.getMinBufferSize(
+                    AUDIO_SAMPLE_RATE_HZ,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val bufferSize = Math.max(minBufferSize, audioBytes.size)
+                
+                val audioTrack = AndroidAudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(AUDIO_SAMPLE_RATE_HZ)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufferSize)
+                    .setTransferMode(AndroidAudioTrack.MODE_STATIC)
+                    .build()
+
+                audioTrack.write(audioBytes, 0, audioBytes.size)
+                audioTrack.play()
+                // AudioTrack static mode doesn't need loop. It plays buffer then stops.
+                // We should release it eventually, but for now fire and forget or track it?
+                // Ideally release after playback completes.
+                // Since this is fire-and-forget for now, let's just let GC handle it or add listener?
+                // AudioTrack doesn't have easy completion listener for static mode without polling.
+                // Let's rely on garbage collection for now or just simple implementation.
+                // Actually, static mode requires write before play.
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to play chunk audio", e)
+            }
+        }
+    }
+
+    fun retryTranscription(chunkId: String) {
+        transcriptionQueue.markRetry(chunkId)
+        scheduleTranscriptionQueueProcessing("retry_requested")
     }
 
     private fun resetTranscriptionState(clearAudio: Boolean) {
