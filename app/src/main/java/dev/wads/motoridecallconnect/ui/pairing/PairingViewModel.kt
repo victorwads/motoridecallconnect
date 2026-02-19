@@ -1,30 +1,41 @@
 package dev.wads.motoridecallconnect.ui.pairing
 
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.data.model.ConnectionTransportMode
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.model.InternetPeerDetails
 import dev.wads.motoridecallconnect.data.model.WifiDirectState
 import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
+import dev.wads.motoridecallconnect.data.repository.InternetConnectivityRepository
+import dev.wads.motoridecallconnect.data.repository.SocialRepository
 import dev.wads.motoridecallconnect.data.repository.WifiDirectRepository
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.utils.NetworkUtils
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
 class PairingViewModel(
     private val localRepository: DeviceDiscoveryRepository,
-    private val wifiDirectRepository: WifiDirectRepository
+    private val wifiDirectRepository: WifiDirectRepository,
+    private val internetRepository: InternetConnectivityRepository,
+    private val socialRepository: SocialRepository
 ) : ViewModel() {
 
     private val _selectedTransport = MutableStateFlow(ConnectionTransportMode.LOCAL_NETWORK)
@@ -34,6 +45,12 @@ class PairingViewModel(
     val discoveredDevices: StateFlow<List<Device>> = _discoveredDevices.asStateFlow()
     private val _wifiDirectDiscoveredDevices = MutableStateFlow<List<Device>>(emptyList())
     val wifiDirectDiscoveredDevices: StateFlow<List<Device>> = _wifiDirectDiscoveredDevices.asStateFlow()
+    private val _internetPeers = MutableStateFlow<List<InternetPeerDetails>>(emptyList())
+    val internetPeers: StateFlow<List<InternetPeerDetails>> = _internetPeers.asStateFlow()
+    private val _friendIds = MutableStateFlow<Set<String>>(emptySet())
+    val friendIds: StateFlow<Set<String>> = _friendIds.asStateFlow()
+    private val _currentUserId = MutableStateFlow(FirebaseAuth.getInstance().currentUser?.uid)
+    val currentUserId: StateFlow<String?> = _currentUserId.asStateFlow()
 
     private val _isHosting = MutableStateFlow(false)
     val isHosting: StateFlow<Boolean> = _isHosting.asStateFlow()
@@ -58,12 +75,18 @@ class PairingViewModel(
 
     private val _connectionErrorMessage = MutableStateFlow<String?>(null)
     val connectionErrorMessage: StateFlow<String?> = _connectionErrorMessage.asStateFlow()
+    private val _presenceIntervalSeconds = MutableStateFlow(DEFAULT_PRESENCE_PUBLISH_INTERVAL_SECONDS)
+    val presenceIntervalSeconds: StateFlow<Int> = _presenceIntervalSeconds.asStateFlow()
 
     private val _pendingDeviceToConnect = MutableSharedFlow<Device>(extraBufferCapacity = 1)
     val pendingDeviceToConnect: SharedFlow<Device> = _pendingDeviceToConnect.asSharedFlow()
+    private val _friendRequestFeedback = MutableSharedFlow<FriendRequestFeedback>(extraBufferCapacity = 1)
+    val friendRequestFeedback: SharedFlow<FriendRequestFeedback> = _friendRequestFeedback.asSharedFlow()
 
     private var lastHostDeviceName: String = Build.MODEL
     private var lastHostPort: Int = DEFAULT_SIGNALING_PORT
+    private var internetDiscoveryJob: Job? = null
+    private var presencePublisherJob: Job? = null
 
     init {
         refreshNetworkSnapshot()
@@ -91,7 +114,18 @@ class PairingViewModel(
                 _wifiDirectState.value = state
             }
         }
+        viewModelScope.launch {
+            socialRepository.getFriends()
+                .catch { emit(emptyList()) }
+                .collect { friends ->
+                    _friendIds.value = friends
+                        .mapNotNull { friend -> friend.uid.takeIf { it.isNotBlank() } }
+                        .toSet()
+                    _currentUserId.value = FirebaseAuth.getInstance().currentUser?.uid
+                }
+        }
         wifiDirectRepository.refreshState()
+        startPresencePublisher()
     }
 
     fun setConnectionTransport(mode: ConnectionTransportMode) {
@@ -106,11 +140,15 @@ class PairingViewModel(
         stopHosting()
         stopWifiDirectDiscovery()
         stopWifiDirectHosting()
+        stopInternetDiscovery()
         _selectedTransport.value = normalizedMode
         _connectionErrorMessage.value = null
         when (normalizedMode) {
             ConnectionTransportMode.LOCAL_NETWORK -> refreshNetworkSnapshot()
-            ConnectionTransportMode.INTERNET -> _discoveredDevices.value = emptyList()
+            ConnectionTransportMode.INTERNET -> {
+                _discoveredDevices.value = emptyList()
+                refreshInternetPeers()
+            }
             ConnectionTransportMode.WIFI_DIRECT -> Unit
         }
         startDiscovery()
@@ -132,6 +170,7 @@ class PairingViewModel(
             }
             ConnectionTransportMode.INTERNET -> {
                 _discoveredDevices.value = emptyList()
+                startInternetDiscovery()
             }
             ConnectionTransportMode.WIFI_DIRECT -> localRepository.startDiscovery()
         }
@@ -139,6 +178,7 @@ class PairingViewModel(
 
     fun stopDiscovery() {
         localRepository.stopDiscovery()
+        stopInternetDiscovery()
     }
 
     fun startHosting(deviceName: String, port: Int = DEFAULT_SIGNALING_PORT) {
@@ -166,8 +206,7 @@ class PairingViewModel(
             ConnectionTransportMode.INTERNET -> {
                 _isHosting.value = false
                 _qrCodeText.value = null
-                _connectionErrorMessage.value =
-                    "Modo Internet/WebRTC ainda não está habilitado nesta versão."
+                startInternetDiscovery()
             }
             ConnectionTransportMode.WIFI_DIRECT -> Unit
         }
@@ -204,6 +243,10 @@ class PairingViewModel(
     }
 
     fun connectToDevice(device: Device) {
+        Log.i(
+            TAG,
+            "connectToDevice called: id=${device.id}, name=${device.name}, transport=${device.connectionTransport}, ip=${device.ip}, port=${device.port}"
+        )
         _connectionErrorMessage.value = null
         if (device.connectionTransport == ConnectionTransportMode.WIFI_DIRECT) {
             viewModelScope.launch {
@@ -214,6 +257,10 @@ class PairingViewModel(
                 )
                 result
                     .onSuccess { resolvedDevice ->
+                        Log.i(
+                            TAG,
+                            "Wi-Fi Direct connect resolved. endpoint=${resolvedDevice.ip}:${resolvedDevice.port} candidates=${resolvedDevice.candidateIps}"
+                        )
                         _pendingDeviceToConnect.emit(
                             resolvedDevice.copy(
                                 connectionTransport = ConnectionTransportMode.WIFI_DIRECT
@@ -221,10 +268,28 @@ class PairingViewModel(
                         )
                     }
                     .onFailure { error ->
+                        Log.w(TAG, "Wi-Fi Direct connect failed", error)
                         _connectionErrorMessage.value =
                             error.message ?: "Falha ao conectar via Wi-Fi Direct."
                     }
             }
+            return
+        }
+
+        if (device.connectionTransport == ConnectionTransportMode.INTERNET || _selectedTransport.value == ConnectionTransportMode.INTERNET) {
+            val details = _internetPeers.value.firstOrNull { it.uid == device.id }
+            if (details != null && !details.canConnect) {
+                _connectionErrorMessage.value =
+                    details.warningMessage ?: "Este amigo não está pronto para conexão via internet."
+                return
+            }
+            _pendingDeviceToConnect.tryEmit(
+                device.copy(
+                    ip = null,
+                    port = null,
+                    connectionTransport = ConnectionTransportMode.INTERNET
+                )
+            )
             return
         }
 
@@ -239,13 +304,13 @@ class PairingViewModel(
             }
 
             ConnectionTransportMode.INTERNET -> {
-                _connectionErrorMessage.value =
-                    "Modo Internet/WebRTC ainda não está habilitado nesta versão."
+                _connectionErrorMessage.value = "Não foi possível iniciar a conexão via internet."
             }
         }
     }
 
     fun startWifiDirectDiscovery() {
+        Log.i(TAG, "startWifiDirectDiscovery")
         wifiDirectRepository.disconnectInfrastructureWifi()
         wifiDirectRepository.startDiscovery()
     }
@@ -255,6 +320,7 @@ class PairingViewModel(
     }
 
     fun startWifiDirectHosting() {
+        Log.i(TAG, "startWifiDirectHosting")
         wifiDirectRepository.disconnectInfrastructureWifi()
         wifiDirectRepository.startHosting()
     }
@@ -274,6 +340,114 @@ class PairingViewModel(
 
     fun clearConnectionErrorMessage() {
         _connectionErrorMessage.value = null
+    }
+
+    fun updatePresencePublishIntervalSeconds(seconds: Int) {
+        val normalized = seconds.coerceIn(MIN_PRESENCE_INTERVAL_SECONDS, MAX_PRESENCE_INTERVAL_SECONDS)
+        if (_presenceIntervalSeconds.value != normalized) {
+            _presenceIntervalSeconds.value = normalized
+            Log.i(TAG, "Presence publish interval updated to ${normalized}s")
+        }
+    }
+
+    fun publishPresenceNow() {
+        viewModelScope.launch {
+            publishPresenceSnapshot("manual_trigger")
+        }
+    }
+
+    fun refreshInternetPeers() {
+        viewModelScope.launch {
+            val peers = runCatching { internetRepository.refreshFriendInternetPeersOnce() }
+                .getOrElse { error ->
+                    _connectionErrorMessage.value = error.message ?: "Falha ao atualizar amigos na internet."
+                    emptyList()
+                }
+            _internetPeers.value = peers
+        }
+    }
+
+    fun findInternetPeer(peerId: String): InternetPeerDetails? {
+        return _internetPeers.value.firstOrNull { it.uid == peerId }
+    }
+
+    fun sendFriendRequestToNearbyDevice(device: Device) {
+        val targetId = device.id.trim()
+        val localUid = FirebaseAuth.getInstance().currentUser?.uid
+        _currentUserId.value = localUid
+
+        if (targetId.isBlank()) {
+            _friendRequestFeedback.tryEmit(
+                FriendRequestFeedback(
+                    message = "Não foi possível enviar solicitação: ID inválido.",
+                    isError = true
+                )
+            )
+            return
+        }
+        if (!canDeviceReceiveFriendRequest(device)) {
+            _friendRequestFeedback.tryEmit(
+                FriendRequestFeedback(
+                    message = "Este dispositivo próximo não expõe um ID de usuário válido para amizade.",
+                    isError = true
+                )
+            )
+            return
+        }
+        if (localUid.isNullOrBlank()) {
+            _friendRequestFeedback.tryEmit(
+                FriendRequestFeedback(
+                    message = "Faça login para enviar solicitações de amizade.",
+                    isError = true
+                )
+            )
+            return
+        }
+        if (targetId == localUid) {
+            _friendRequestFeedback.tryEmit(
+                FriendRequestFeedback(
+                    message = "Você não pode adicionar seu próprio usuário.",
+                    isError = true
+                )
+            )
+            return
+        }
+        if (_friendIds.value.contains(targetId)) {
+            _friendRequestFeedback.tryEmit(
+                FriendRequestFeedback(
+                    message = "Este usuário já está na sua lista de amigos.",
+                    isError = false
+                )
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                socialRepository.sendFriendRequest(targetId)
+            }.onSuccess {
+                _friendRequestFeedback.emit(
+                    FriendRequestFeedback(
+                        message = "Solicitação de amizade enviada para ${device.name}.",
+                        isError = false
+                    )
+                )
+            }.onFailure { error ->
+                _friendRequestFeedback.emit(
+                    FriendRequestFeedback(
+                        message = error.message ?: "Falha ao enviar solicitação de amizade.",
+                        isError = true
+                    )
+                )
+            }
+        }
+    }
+
+    fun canDeviceReceiveFriendRequest(device: Device): Boolean {
+        val id = device.id.trim()
+        if (id.isBlank()) return false
+        if (id.contains(":")) return false // Common on Wi-Fi Direct MAC-based IDs
+        return id.length >= MIN_FRIEND_ID_LENGTH
     }
 
     fun cancelPendingConnection() {
@@ -448,10 +622,62 @@ class PairingViewModel(
         stopDiscovery()
         stopWifiDirectDiscovery()
         stopWifiDirectHosting()
+        stopInternetDiscovery()
+        presencePublisherJob?.cancel()
         wifiDirectRepository.tearDown()
     }
 
+    private fun startInternetDiscovery() {
+        if (internetDiscoveryJob != null) {
+            return
+        }
+        internetDiscoveryJob = viewModelScope.launch {
+            internetRepository.observeFriendInternetPeers()
+                .collect { peers ->
+                    _internetPeers.value = peers
+                }
+        }
+    }
+
+    private fun stopInternetDiscovery() {
+        internetDiscoveryJob?.cancel()
+        internetDiscoveryJob = null
+    }
+
+    private fun startPresencePublisher() {
+        presencePublisherJob?.cancel()
+        presencePublisherJob = viewModelScope.launch {
+            _presenceIntervalSeconds.collectLatest { intervalSeconds ->
+                publishPresenceSnapshot("publisher_start_${intervalSeconds}s")
+                while (isActive) {
+                    delay(intervalSeconds * 1_000L)
+                    publishPresenceSnapshot("periodic_${intervalSeconds}s")
+                }
+            }
+        }
+    }
+
+    private suspend fun publishPresenceSnapshot(reason: String) {
+        runCatching {
+            val snapshot = NetworkUtils.getNetworkSnapshot()
+            _networkSnapshot.value = snapshot
+            internetRepository.publishLocalConnectionInfo(
+                snapshot = snapshot,
+                wifiDirectState = _wifiDirectState.value,
+                isLocalHosting = _isHosting.value
+            )
+        }.onSuccess {
+            Log.d(
+                TAG,
+                "Presence published. reason=$reason, primaryIp=${_networkSnapshot.value.primaryIpv4}, hosting=${_isHosting.value}"
+            )
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to publish presence. reason=$reason", error)
+        }
+    }
+
     companion object {
+        private const val TAG = "PairingVM"
         private const val DEFAULT_SIGNALING_PORT = 8080
         private const val QR_PAYLOAD_TYPE = "motoride_pairing"
         private const val QR_PAYLOAD_VERSION = 2
@@ -459,5 +685,14 @@ class PairingViewModel(
         private const val MAX_QR_INTERFACES = 12
         private const val MAX_QR_ADDRESSES_PER_INTERFACE = 8
         private const val MAX_QR_IP_CANDIDATES = 16
+        private const val DEFAULT_PRESENCE_PUBLISH_INTERVAL_SECONDS = 30
+        private const val MIN_PRESENCE_INTERVAL_SECONDS = 10
+        private const val MAX_PRESENCE_INTERVAL_SECONDS = 300
+        private const val MIN_FRIEND_ID_LENGTH = 10
     }
 }
+
+data class FriendRequestFeedback(
+    val message: String,
+    val isError: Boolean
+)

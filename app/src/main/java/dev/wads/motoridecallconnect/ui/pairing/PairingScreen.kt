@@ -8,6 +8,7 @@ import android.location.LocationManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -25,6 +26,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -70,6 +73,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.ConnectionTransportMode
 import dev.wads.motoridecallconnect.data.model.Device
+import dev.wads.motoridecallconnect.data.model.InternetPeerDetails
 import dev.wads.motoridecallconnect.data.model.WifiDirectState
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.ui.components.BadgeStatus
@@ -92,6 +96,9 @@ fun PairingScreen(
 ) {
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val wifiDirectDiscoveredDevices by viewModel.wifiDirectDiscoveredDevices.collectAsState()
+    val internetPeers by viewModel.internetPeers.collectAsState()
+    val friendIds by viewModel.friendIds.collectAsState()
+    val currentUserId by viewModel.currentUserId.collectAsState()
     val isHosting by viewModel.isHosting.collectAsState()
     val qrCodeText by viewModel.qrCodeText.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
@@ -138,6 +145,15 @@ fun PairingScreen(
             onConnectToDevice(device)
         }
     }
+    LaunchedEffect(viewModel, context) {
+        viewModel.friendRequestFeedback.collectLatest { feedback ->
+            Toast.makeText(
+                context,
+                feedback.message,
+                if (feedback.isError) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
 
     LaunchedEffect(connectionErrorMessage) {
         if (!connectionErrorMessage.isNullOrBlank()) {
@@ -168,6 +184,7 @@ fun PairingScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp)
                     .padding(top = 16.dp)
             ) {
@@ -298,7 +315,17 @@ fun PairingScreen(
                                 viewModel.startWifiDirectDiscovery()
                             }
                         },
-                        onDisconnectRouterWifi = { viewModel.disconnectRouterWifiForWifiDirect() }
+                        onDisconnectRouterWifi = { viewModel.disconnectRouterWifiForWifiDirect() },
+                        internetPeers = internetPeers,
+                        onRefreshInternet = { viewModel.refreshInternetPeers() },
+                        friendIds = friendIds,
+                        currentUserId = currentUserId,
+                        onSendFriendRequest = { device ->
+                            viewModel.sendFriendRequestToNearbyDevice(device)
+                        },
+                        canDeviceReceiveFriendRequest = { device ->
+                            viewModel.canDeviceReceiveFriendRequest(device)
+                        }
                     )
                 } else {
                     HostModeContent(
@@ -333,29 +360,54 @@ fun PairingScreen(
 
         is PairViewState.Detail -> {
             selectedDevice?.let { device ->
-                DeviceDetailView(
-                    device = device,
-                    state = pairState,
-                    errorMessage = connectionErrorMessage,
-                    onBack = {
-                        if (pairState == PairConnectionState.Connecting) {
-                            viewModel.cancelPendingConnection()
+                val internetPeer = if (device.connectionTransport == ConnectionTransportMode.INTERNET) {
+                    viewModel.findInternetPeer(device.id)
+                } else {
+                    null
+                }
+
+                if (device.connectionTransport == ConnectionTransportMode.INTERNET) {
+                    InternetDeviceDetailView(
+                        device = device,
+                        peerDetails = internetPeer,
+                        state = pairState,
+                        errorMessage = connectionErrorMessage,
+                        onBack = {
+                            if (pairState == PairConnectionState.Connecting) {
+                                viewModel.cancelPendingConnection()
+                            }
+                            viewState = PairViewState.List
+                        },
+                        onConnect = {
+                            pairState = PairConnectionState.Connecting
+                            viewModel.connectToDevice(device)
                         }
-                        viewState = PairViewState.List
-                    },
-                    onConnect = {
-                        pairState = PairConnectionState.Connecting
-                        viewModel.connectToDevice(device)
-                    }
-                )
+                    )
+                } else {
+                    DeviceDetailView(
+                        device = device,
+                        state = pairState,
+                        errorMessage = connectionErrorMessage,
+                        onBack = {
+                            if (pairState == PairConnectionState.Connecting) {
+                                viewModel.cancelPendingConnection()
+                            }
+                            viewState = PairViewState.List
+                        },
+                        onConnect = {
+                            pairState = PairConnectionState.Connecting
+                            viewModel.connectToDevice(device)
+                        }
+                    )
+                }
 
                 LaunchedEffect(connectionStatus, pairState, selectedDevice?.id) {
                     if (pairState == PairConnectionState.Connecting) {
                         when (connectionStatus) {
                             ConnectionStatus.CONNECTED -> pairState = PairConnectionState.Connected
-                            ConnectionStatus.CONNECTING,
                             ConnectionStatus.ERROR,
-                            ConnectionStatus.DISCONNECTED -> Unit
+                            ConnectionStatus.DISCONNECTED -> pairState = PairConnectionState.Error
+                            ConnectionStatus.CONNECTING -> Unit
                         }
                     }
                 }
@@ -395,6 +447,9 @@ private fun ClientModeContent(
     selectedTransport: ConnectionTransportMode,
     discoveredDevices: List<Device>,
     wifiDirectDiscoveredDevices: List<Device>,
+    internetPeers: List<InternetPeerDetails>,
+    friendIds: Set<String>,
+    currentUserId: String?,
     networkSnapshot: NetworkUtils.NetworkSnapshot,
     wifiDirectState: WifiDirectState,
     wifiDirectChecks: WifiDirectSystemChecks,
@@ -405,7 +460,10 @@ private fun ClientModeContent(
     onSelectDevice: (Device) -> Unit,
     onRefreshNetwork: () -> Unit,
     onRefreshWifiDirect: () -> Unit,
-    onDisconnectRouterWifi: () -> Unit
+    onDisconnectRouterWifi: () -> Unit,
+    onRefreshInternet: () -> Unit,
+    onSendFriendRequest: (Device) -> Unit,
+    canDeviceReceiveFriendRequest: (Device) -> Boolean
 ) {
     when (selectedTransport) {
         ConnectionTransportMode.LOCAL_NETWORK -> {
@@ -426,7 +484,11 @@ private fun ClientModeContent(
             Spacer(modifier = Modifier.height(12.dp))
             DeviceList(
                 devices = discoveredDevices,
-                onSelectDevice = onSelectDevice
+                onSelectDevice = onSelectDevice,
+                friendIds = friendIds,
+                currentUserId = currentUserId,
+                canSendFriendRequest = canDeviceReceiveFriendRequest,
+                onSendFriendRequest = onSendFriendRequest
             )
             Spacer(modifier = Modifier.height(16.dp))
             OutlinedButton(
@@ -484,17 +546,43 @@ private fun ClientModeContent(
                     DeviceList(
                         devices = wifiDirectDiscoveredDevices,
                         emptyLabel = stringResource(R.string.wifi_direct_no_peers),
-                        onSelectDevice = onSelectDevice
+                        onSelectDevice = onSelectDevice,
+                        friendIds = friendIds,
+                        currentUserId = currentUserId,
+                        canSendFriendRequest = canDeviceReceiveFriendRequest,
+                        onSendFriendRequest = onSendFriendRequest
                     )
                 }
             }
         }
 
         ConnectionTransportMode.INTERNET -> {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.internet_friends_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(onClick = onRefreshInternet) {
+                    Text(stringResource(R.string.refresh_network_info))
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            val internetDevices = internetPeers.map { it.device }
+            DeviceList(
+                devices = internetDevices,
+                emptyLabel = stringResource(R.string.internet_no_friends_available),
+                onSelectDevice = onSelectDevice
+            )
+            Spacer(modifier = Modifier.height(12.dp))
             StatusCard(title = stringResource(R.string.transport_internet_label)) {
                 Text(
-                    text = stringResource(R.string.internet_mode_future_desc),
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = stringResource(R.string.internet_mode_ready_desc),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -625,7 +713,11 @@ private fun HostModeContent(
 private fun DeviceList(
     devices: List<Device>,
     emptyLabel: String? = null,
-    onSelectDevice: (Device) -> Unit
+    onSelectDevice: (Device) -> Unit,
+    friendIds: Set<String> = emptySet(),
+    currentUserId: String? = null,
+    canSendFriendRequest: (Device) -> Boolean = { false },
+    onSendFriendRequest: ((Device) -> Unit)? = null
 ) {
     if (devices.isEmpty()) {
         Box(
@@ -654,9 +746,19 @@ private fun DeviceList(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(devices) { device ->
-            DeviceItem(device) {
-                onSelectDevice(device)
-            }
+            val showAddFriendAction =
+                onSendFriendRequest != null &&
+                    !friendIds.contains(device.id) &&
+                    device.id != currentUserId &&
+                    canSendFriendRequest(device)
+            DeviceItem(
+                device = device,
+                onClick = { onSelectDevice(device) },
+                showAddFriendAction = showAddFriendAction,
+                onAddFriendClick = {
+                    onSendFriendRequest?.invoke(device)
+                }
+            )
         }
     }
 }
@@ -778,7 +880,12 @@ private fun WifiDirectPrerequisitesCard(
 }
 
 @Composable
-fun DeviceItem(device: Device, onClick: () -> Unit) {
+fun DeviceItem(
+    device: Device,
+    onClick: () -> Unit,
+    showAddFriendAction: Boolean = false,
+    onAddFriendClick: (() -> Unit)? = null
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -816,12 +923,23 @@ fun DeviceItem(device: Device, onClick: () -> Unit) {
                 )
             }
         }
-        Icon(
-            Icons.Default.Wifi,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-            modifier = Modifier.size(16.dp)
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Icon(
+                Icons.Default.Wifi,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                modifier = Modifier.size(16.dp)
+            )
+            if (showAddFriendAction && onAddFriendClick != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onAddFriendClick) {
+                    Text(
+                        text = stringResource(R.string.add_friend_desc),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -921,6 +1039,223 @@ fun DeviceDetailView(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InternetDeviceDetailView(
+    device: Device,
+    peerDetails: InternetPeerDetails?,
+    state: PairConnectionState,
+    errorMessage: String?,
+    onBack: () -> Unit,
+    onConnect: () -> Unit
+) {
+    val canConnect = peerDetails?.canConnect ?: true
+    val statusText = when {
+        peerDetails == null -> stringResource(R.string.internet_peer_data_missing)
+        peerDetails.canConnect -> stringResource(R.string.internet_peer_ready)
+        else -> stringResource(R.string.internet_peer_not_ready)
+    }
+
+    val statusColor = when {
+        peerDetails?.canConnect == true -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.error
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .padding(top = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            TextButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(R.string.back))
+            }
+        }
+
+        item {
+            StatusCard(title = stringResource(R.string.transport_internet_label)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    UserProfileView(
+                        userId = device.id,
+                        avatarSize = 80,
+                        fallbackName = device.name
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = statusColor,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    peerDetails?.warningMessage?.takeIf { it.isNotBlank() }?.let { warning ->
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = warning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (canConnect) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    when (state) {
+                        PairConnectionState.Idle -> {
+                            BigButton(
+                                text = stringResource(R.string.internet_connect_button),
+                                onClick = onConnect,
+                                disabled = !canConnect,
+                                fullWidth = true
+                            )
+                        }
+
+                        PairConnectionState.Connecting -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(stringResource(R.string.connecting), color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+
+                        PairConnectionState.Connected -> {
+                            Text(
+                                stringResource(R.string.connected),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            LaunchedEffect(Unit) {
+                                delay(1000)
+                                onBack()
+                            }
+                        }
+
+                        PairConnectionState.Error -> {
+                            Text(
+                                text = errorMessage ?: stringResource(R.string.connection_failed),
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            BigButton(
+                                text = stringResource(R.string.internet_connect_button),
+                                onClick = onConnect,
+                                variant = ButtonVariant.Outline,
+                                disabled = !canConnect,
+                                fullWidth = true
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            StatusCard(title = stringResource(R.string.internet_debug_summary_title)) {
+                Text(
+                    text = stringResource(
+                        R.string.internet_last_online,
+                        peerDetails?.lastOnlineMs?.formatAsDebugTimestamp()
+                            ?: stringResource(R.string.unknown_device)
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_last_connection_update,
+                        peerDetails?.lastConnectionUpdateMs?.formatAsDebugTimestamp()
+                            ?: stringResource(R.string.unknown_device)
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_signaling_mode,
+                        peerDetails?.signalingMode ?: stringResource(R.string.unknown_device)
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_private_accessible,
+                        if (peerDetails?.privateDataAccessible == true) {
+                            stringResource(R.string.internet_yes)
+                        } else {
+                            stringResource(R.string.internet_no)
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_public_fallback_used,
+                        if (peerDetails?.usingPublicFallback == true) {
+                            stringResource(R.string.internet_yes)
+                        } else {
+                            stringResource(R.string.internet_no)
+                        }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_public_ips,
+                        peerDetails?.publicIpCandidates?.joinToString(", ").orEmpty().ifBlank { "-" }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(
+                        R.string.internet_private_ips,
+                        peerDetails?.privateIpCandidates?.joinToString(", ").orEmpty().ifBlank { "-" }
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        item {
+            StatusCard(title = stringResource(R.string.internet_public_payload_title)) {
+                Text(
+                    text = peerDetails?.debugPublicJson ?: "{}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        item {
+            StatusCard(title = stringResource(R.string.internet_private_payload_title)) {
+                Text(
+                    text = peerDetails?.debugPrivateJson ?: "{}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -1159,6 +1494,13 @@ private fun Context.openSystemSettings(action: String) {
             Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
+}
+
+private fun Long.formatAsDebugTimestamp(): String {
+    return runCatching {
+        val formatter = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        formatter.format(java.util.Date(this))
+    }.getOrDefault(toString())
 }
 
 private data class WifiDirectSystemChecks(

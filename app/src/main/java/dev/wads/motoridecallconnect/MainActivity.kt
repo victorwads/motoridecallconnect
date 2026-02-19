@@ -18,9 +18,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.room.Room
 import dev.wads.motoridecallconnect.data.local.AppDatabase
 import dev.wads.motoridecallconnect.data.repository.TripRepository
+import dev.wads.motoridecallconnect.data.repository.InternetConnectivityRepository
 import dev.wads.motoridecallconnect.data.repository.WifiDirectRepository
 import dev.wads.motoridecallconnect.service.AudioService
 import dev.wads.motoridecallconnect.data.model.Device
@@ -53,6 +56,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     )
 
     private var audioService: AudioService? = null
+    private var currentlyPlayingChunkId by mutableStateOf<String?>(null)
     private var isBound = false
     private var isBindingService = false
     private val pendingServiceActions = mutableListOf<(AudioService) -> Unit>()
@@ -71,12 +75,14 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
     private val socialRepository by lazy { dev.wads.motoridecallconnect.data.repository.SocialRepository() }
     private val deviceDiscoveryRepository by lazy { dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository(applicationContext) }
     private val wifiDirectRepository by lazy { WifiDirectRepository(applicationContext) }
+    private val internetConnectivityRepository by lazy { InternetConnectivityRepository(socialRepository) }
     private val viewModelFactory by lazy {
         ViewModelFactory(
             repository,
             socialRepository,
             deviceDiscoveryRepository,
-            wifiDirectRepository
+            wifiDirectRepository,
+            internetConnectivityRepository
         )
     }
     private val firebaseAuth by lazy { FirebaseAuth.getInstance() }
@@ -108,6 +114,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     Log.w("MainActivity", "Failed to update public profile for $currentUid", error)
                 }
         }
+        pairingViewModel.publishPresenceNow()
         restartFriendsObserver()
     }
 
@@ -202,6 +209,13 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     )
                 }
 
+                LaunchedEffect(settingsState.presenceUpdateIntervalSeconds) {
+                    pairingViewModel.updatePresencePublishIntervalSeconds(
+                        settingsState.presenceUpdateIntervalSeconds
+                    )
+                    pairingViewModel.publishPresenceNow()
+                }
+
                 LaunchedEffect(isHosting) {
                     if (isHosting) {
                         ensureAudioServiceReady { service ->
@@ -253,11 +267,18 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         audioService?.disconnect()
                     },
                     onPlayAudio = { id ->
+                        Log.d("MainActivity", "onPlayAudio: id=$id, audioService=${audioService != null}")
                         audioService?.playTranscriptionChunk(id)
                     },
+                    onStopAudio = {
+                        Log.d("MainActivity", "onStopAudio")
+                        audioService?.stopPlayback()
+                    },
                     onRetryTranscription = { id ->
+                        Log.d("MainActivity", "onRetryTranscription: id=$id, audioService=${audioService != null}")
                         audioService?.retryTranscription(id)
-                    }
+                    },
+                    currentlyPlayingId = currentlyPlayingChunkId
                 )
             }
         }
@@ -363,8 +384,15 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
         }
     }
 
+    override fun onPlaybackStateChanged(chunkId: String, isPlaying: Boolean) {
+        runOnUiThread {
+            currentlyPlayingChunkId = if (isPlaying) chunkId else null
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        pairingViewModel.publishPresenceNow()
         if (pairingViewModel.isHosting.value) {
             pairingViewModel.stopDiscovery()
             pairingViewModel.stopWifiDirectDiscovery()

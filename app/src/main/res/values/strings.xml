@@ -97,6 +97,7 @@
     <string name="stt_engine_header">Speech Engine</string>
     <string name="stt_engine_hint">Choose the transcription backend used during trip recording.</string>
     <string name="stt_engine_whisper">Whisper (local model)</string>
+    <string name="stt_engine_whisper_kit">WhisperKit (Qualcomm NPU)</string>
     <string name="stt_engine_native">Android native recognition</string>
     <string name="native_language_header">Native Recognition Language</string>
     <string name="native_language_hint">Used only with Android native recognition. The app sends this language to improve accuracy.</string>
@@ -129,6 +130,9 @@
     <string name="vad_stop_delay_label">Stop delay: %1$.1f s</string>
     <string name="auto_connect_friends_title">Auto-connect nearby friends</string>
     <string name="auto_connect_friends_desc">Automatically connect when a nearby host is in your friends list.</string>
+    <string name="presence_interval_title">Connection presence update interval</string>
+    <string name="presence_interval_desc">Defines how often the app updates your public/connection info in Firebase.</string>
+    <string name="presence_interval_value">%1$d seconds</string>
 
     <!-- Navigation & History -->
     <string name="nav_active_trip">Home</string>
@@ -200,6 +204,25 @@
     <string name="host_mode_label">Host Mode</string>
     <string name="be_host_description">Make your device discoverable on the network</string>
     <string name="internet_mode_future_desc">This mode is planned for remote WebRTC over internet using friend presence in Firebase.</string>
+    <string name="internet_mode_ready_desc">Choose a friend and connect using WebRTC signaling over Firebase (internet mode).</string>
+    <string name="internet_friends_title">Friends available on internet</string>
+    <string name="internet_no_friends_available">No friends available for internet connection right now.</string>
+    <string name="internet_connect_button">Connect via Internet</string>
+    <string name="internet_peer_data_missing">No internet debug info available for this peer.</string>
+    <string name="internet_peer_ready">Peer is ready for internet call.</string>
+    <string name="internet_peer_not_ready">Peer is not ready for internet call.</string>
+    <string name="internet_debug_summary_title">Internet debug summary</string>
+    <string name="internet_last_online">Last online: %1$s</string>
+    <string name="internet_last_connection_update">Last connection update: %1$s</string>
+    <string name="internet_signaling_mode">Signaling mode: %1$s</string>
+    <string name="internet_private_accessible">Private connection info accessible: %1$s</string>
+    <string name="internet_public_fallback_used">Public fallback in use: %1$s</string>
+    <string name="internet_yes">Yes</string>
+    <string name="internet_no">No</string>
+    <string name="internet_public_ips">Public info IPs: %1$s</string>
+    <string name="internet_private_ips">Private info IPs: %1$s</string>
+    <string name="internet_public_payload_title">Public payload</string>
+    <string name="internet_private_payload_title">Private payload</string>
     <string name="wifi_direct_not_supported">Wi-Fi Direct is not supported on this device.</string>
     <string name="wifi_direct_system_disabled">Enable Wi-Fi Direct/Wi-Fi in system settings.</string>
     <string name="wifi_direct_searching">Searching nearby peers...</string>

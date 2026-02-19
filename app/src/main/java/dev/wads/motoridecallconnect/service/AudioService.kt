@@ -42,6 +42,7 @@ import dev.wads.motoridecallconnect.stt.queue.FileBackedTranscriptionChunkQueue
 import dev.wads.motoridecallconnect.stt.queue.QueuedTranscriptionChunk
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionChunkQueue
 import dev.wads.motoridecallconnect.stt.queue.TranscriptionQueueSnapshot
+import dev.wads.motoridecallconnect.transport.FirestoreSignalingClient
 import dev.wads.motoridecallconnect.transport.SignalingClient
 import dev.wads.motoridecallconnect.transport.WebRtcClient
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
@@ -104,6 +105,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private lateinit var audioCapturer: AudioCapturer
     private var speechRecognizerHelper: SpeechRecognizerHelper? = null
     private lateinit var signalingClient: SignalingClient
+    private lateinit var firestoreSignalingClient: FirestoreSignalingClient
     private val firestore = FirebaseFirestore.getInstance()
     private lateinit var audioManager: AudioManager
     private lateinit var vad: SimpleVad
@@ -112,6 +114,11 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var transcriptionQueue: TranscriptionChunkQueue
+
+    // Playback state
+    @Volatile private var currentPlaybackTrack: android.media.AudioTrack? = null
+    @Volatile private var currentPlaybackChunkId: String? = null
+    private val playbackLock = Any()
 
     private var callback: ServiceCallback? = null
 
@@ -147,6 +154,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var controlDataChannel: DataChannel? = null
     private var pendingTripStatusSync = false
     private var isRemoteTransmitting = false
+    private var activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
     private var communicationProfileApplied = false
     private var savedAudioMode: Int? = null
     private var savedSpeakerphoneOn: Boolean? = null
@@ -197,12 +205,13 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean)
         fun onModelDownloadProgress(progress: Int)
         fun onModelDownloadStateChanged(isDownloading: Boolean, isSuccess: Boolean? = null)
+        fun onPlaybackStateChanged(chunkId: String, isPlaying: Boolean) {}
     }
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
             val sdpMid = candidate.sdpMid.orEmpty()
-             signalingClient.sendMessage(
+             sendSignalingMessage(
                  "ICE64:$sdpMid:${candidate.sdpMLineIndex}:${encodeSignalPayload(candidate.sdp)}"
              )
         }
@@ -265,6 +274,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         audioCapturer = AudioCapturer(this)
         transcriptionQueue = FileBackedTranscriptionChunkQueue(this)
         signalingClient = SignalingClient(this)
+        firestoreSignalingClient = FirestoreSignalingClient(this)
+        firestoreSignalingClient.start()
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
         registerAudioRouteCallbacks()
         refreshAudioRouteState(reason = "service_create")
@@ -306,6 +317,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         clearControlDataChannel()
         webRtcClient.close()
         signalingClient.close()
+        firestoreSignalingClient.close()
     }
 
     fun registerCallback(callback: ServiceCallback) {
@@ -325,9 +337,33 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     fun connectToPeer(device: Device) {
+        if (device.connectionTransport == ConnectionTransportMode.INTERNET) {
+            if (isHostingEnabled) {
+                setHostingEnabled(false)
+            }
+            resetSignalingClient(startServer = false)
+            applyRemoteTransmissionState(false, source = "connect_to_peer_internet")
+            connectedPeer = device.copy(connectionTransport = ConnectionTransportMode.INTERNET)
+            connectionStatus = ConnectionStatus.CONNECTING
+            callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+            if (device.id.isBlank()) {
+                connectionStatus = ConnectionStatus.ERROR
+                callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
+                return
+            }
+            activeSignalingTransport = ConnectionTransportMode.INTERNET
+            firestoreSignalingClient.connectToPeer(
+                peerUid = device.id,
+                localPeerInfoPayload = buildPeerInfoPayload()
+            )
+            return
+        }
+
         if (isHostingEnabled) {
             setHostingEnabled(false)
         }
+        firestoreSignalingClient.clearSession(notify = false)
+        activeSignalingTransport = device.connectionTransport
         resetSignalingClient(startServer = false)
         applyRemoteTransmissionState(false, source = "connect_to_peer")
         connectedPeer = device
@@ -411,6 +447,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     fun disconnect() {
         resetSignalingClient(startServer = isHostingEnabled)
+        firestoreSignalingClient.clearSession(notify = false)
+        activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
         clearControlDataChannel()
         webRtcClient.close()
         // Re-initialize for next potential connection
@@ -433,6 +471,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         isHostingEnabled = enabled
         if (enabled) {
+            firestoreSignalingClient.clearSession(notify = false)
+            activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
             resetSignalingClient(startServer = true)
             Log.i(TAG, "Hosting enabled: signaling server started.")
         } else {
@@ -650,7 +690,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.d("AudioService", "Peer connected. initiator=$isInitiator")
         connectionStatus = ConnectionStatus.CONNECTING
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
-        signalingClient.sendMessage("NAME:${buildPeerInfoPayload()}")
+        if (firestoreSignalingClient.hasActiveSession()) {
+            activeSignalingTransport = ConnectionTransportMode.INTERNET
+        }
+        sendSignalingMessage("NAME:${buildPeerInfoPayload()}")
         if (isInitiator) {
             val localControlChannel = webRtcClient.createDataChannel(CONTROL_CHANNEL_LABEL)
             if (localControlChannel != null) {
@@ -661,7 +704,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             webRtcClient.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription) {
                     webRtcClient.setLocalDescription(this, sdp)
-                    signalingClient.sendMessage("OFFER64:${encodeSignalPayload(sdp.description)}")
+                    sendSignalingMessage("OFFER64:${encodeSignalPayload(sdp.description)}")
                 }
                 override fun onSetSuccess() {}
                 override fun onCreateFailure(reason: String?) {
@@ -690,14 +733,20 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             connectedPeer = Device(
                 id = peerUid ?: peerDisplayName,
                 name = peerDisplayName,
-                deviceName = peerDisplayName
+                deviceName = peerDisplayName,
+                connectionTransport = activeSignalingTransport
             )
         } else {
             val existing = connectedPeer
             connectedPeer = existing?.copy(
                 id = peerUid ?: existing.id,
                 name = peerDisplayName,
-                deviceName = peerDisplayName
+                deviceName = peerDisplayName,
+                connectionTransport = if (activeSignalingTransport == ConnectionTransportMode.INTERNET) {
+                    ConnectionTransportMode.INTERNET
+                } else {
+                    existing.connectionTransport
+                }
             )
         }
         callback?.onConnectionStatusChanged(dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus.CONNECTING, connectedPeer)
@@ -712,7 +761,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 webRtcClient.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(answerSdp: SessionDescription) {
                         webRtcClient.setLocalDescription(this, answerSdp)
-                        signalingClient.sendMessage("ANSWER64:${encodeSignalPayload(answerSdp.description)}")
+                        sendSignalingMessage("ANSWER64:${encodeSignalPayload(answerSdp.description)}")
                     }
                     override fun onSetSuccess() {}
                     override fun onCreateFailure(reason: String?) {
@@ -774,26 +823,58 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.w(TAG, "Signaling peer disconnected")
         applyRemoteTransmissionState(false, source = "peer_disconnected")
         if (isRtcConnected) {
-            restartSignalingServer()
+            if (activeSignalingTransport == ConnectionTransportMode.INTERNET) {
+                firestoreSignalingClient.clearSession(notify = false)
+                activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
+                if (isHostingEnabled) {
+                    restartSignalingServer()
+                }
+            } else {
+                restartSignalingServer()
+            }
             return
         }
         connectionStatus = ConnectionStatus.DISCONNECTED
         syncOutgoingAudioState(reason = "peer_disconnected")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
-        restartSignalingServer()
+        if (activeSignalingTransport == ConnectionTransportMode.INTERNET) {
+            firestoreSignalingClient.clearSession(notify = false)
+            activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
+            if (isHostingEnabled) {
+                restartSignalingServer()
+            }
+        } else {
+            restartSignalingServer()
+        }
     }
 
     override fun onSignalingError(error: Throwable) {
         Log.e(TAG, "Signaling error", error)
         applyRemoteTransmissionState(false, source = "signaling_error")
         if (isRtcConnected) {
-            restartSignalingServer()
+            if (activeSignalingTransport == ConnectionTransportMode.INTERNET) {
+                firestoreSignalingClient.clearSession(notify = false)
+                activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
+                if (isHostingEnabled) {
+                    restartSignalingServer()
+                }
+            } else {
+                restartSignalingServer()
+            }
             return
         }
         connectionStatus = ConnectionStatus.ERROR
         syncOutgoingAudioState(reason = "signaling_error")
         callback?.onConnectionStatusChanged(connectionStatus, connectedPeer)
-        restartSignalingServer()
+        if (activeSignalingTransport == ConnectionTransportMode.INTERNET) {
+            firestoreSignalingClient.clearSession(notify = false)
+            activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
+            if (isHostingEnabled) {
+                restartSignalingServer()
+            }
+        } else {
+            restartSignalingServer()
+        }
     }
 
     // --- AudioCapturerListener Callbacks ---
@@ -1475,10 +1556,31 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     fun playTranscriptionChunk(chunkId: String) {
-        val chunk = transcriptionQueue.snapshot().items.find { it.id == chunkId } ?: return
-        val audioBytes = transcriptionQueue.readAudioBytes(chunk) ?: return
-        
-        // Play audio from bytes using AudioTrack
+        // UI sends Firestore document IDs ("chunk_<uuid>"), queue uses raw UUIDs
+        val queueId = chunkId.removePrefix("chunk_")
+        Log.d(TAG, "playTranscriptionChunk: requested chunkId=$chunkId, resolved queueId=$queueId")
+
+        // Stop any current playback first
+        stopPlayback()
+
+        val snapshot = transcriptionQueue.snapshot()
+        val chunk = snapshot.items.find { it.id == queueId }
+        if (chunk == null) {
+            Log.w(TAG, "playTranscriptionChunk: chunk not found for queueId=$queueId")
+            return
+        }
+        Log.d(TAG, "playTranscriptionChunk: found chunk id=${chunk.id}, audioPath=${chunk.audioFilePath}, status=${chunk.status}")
+
+        val audioFile = java.io.File(chunk.audioFilePath)
+        Log.d(TAG, "playTranscriptionChunk: audioFile exists=${audioFile.exists()}, size=${if (audioFile.exists()) audioFile.length() else -1}")
+
+        val audioBytes = transcriptionQueue.readAudioBytes(chunk)
+        if (audioBytes == null) {
+            Log.w(TAG, "playTranscriptionChunk: readAudioBytes returned null for ${chunk.audioFilePath}")
+            return
+        }
+        Log.d(TAG, "playTranscriptionChunk: read ${audioBytes.size} bytes, playing at ${AUDIO_SAMPLE_RATE_HZ}Hz mono PCM16")
+
         transcriptionExecutor.execute {
             try {
                 val minBufferSize = AndroidAudioTrack.getMinBufferSize(
@@ -1486,8 +1588,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     AudioFormat.CHANNEL_OUT_MONO,
                     AudioFormat.ENCODING_PCM_16BIT
                 )
-                val bufferSize = Math.max(minBufferSize, audioBytes.size)
-                
+                val bufferSize = maxOf(minBufferSize, audioBytes.size)
+
                 val audioTrack = AndroidAudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -1506,23 +1608,88 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                     .setTransferMode(AndroidAudioTrack.MODE_STATIC)
                     .build()
 
-                audioTrack.write(audioBytes, 0, audioBytes.size)
+                synchronized(playbackLock) {
+                    currentPlaybackTrack = audioTrack
+                    currentPlaybackChunkId = chunkId
+                }
+                callback?.onPlaybackStateChanged(chunkId, true)
+
+                val written = audioTrack.write(audioBytes, 0, audioBytes.size)
+                Log.d(TAG, "playTranscriptionChunk: wrote $written/${audioBytes.size} bytes to AudioTrack")
                 audioTrack.play()
-                // AudioTrack static mode doesn't need loop. It plays buffer then stops.
-                // We should release it eventually, but for now fire and forget or track it?
-                // Ideally release after playback completes.
-                // Since this is fire-and-forget for now, let's just let GC handle it or add listener?
-                // AudioTrack doesn't have easy completion listener for static mode without polling.
-                // Let's rely on garbage collection for now or just simple implementation.
-                // Actually, static mode requires write before play.
+
+                val durationMs = (audioBytes.size.toLong() * 1000L) / (AUDIO_SAMPLE_RATE_HZ * AUDIO_BYTES_PER_SAMPLE)
+                Log.d(TAG, "playTranscriptionChunk: estimated duration=${durationMs}ms")
+
+                // Wait for playback, checking for stop requests
+                val sleepStep = 100L
+                var elapsed = 0L
+                while (elapsed < durationMs + 200) {
+                    Thread.sleep(sleepStep)
+                    elapsed += sleepStep
+                    synchronized(playbackLock) {
+                        if (currentPlaybackChunkId != chunkId) {
+                            Log.d(TAG, "playTranscriptionChunk: playback interrupted for $chunkId")
+                            return@execute
+                        }
+                    }
+                }
+
+                synchronized(playbackLock) {
+                    if (currentPlaybackChunkId == chunkId) {
+                        currentPlaybackTrack = null
+                        currentPlaybackChunkId = null
+                    }
+                }
+                audioTrack.stop()
+                audioTrack.release()
+                callback?.onPlaybackStateChanged(chunkId, false)
+                Log.d(TAG, "playTranscriptionChunk: playback finished for $chunkId")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to play chunk audio", e)
+                Log.e(TAG, "playTranscriptionChunk: failed to play chunk audio", e)
+                synchronized(playbackLock) {
+                    if (currentPlaybackChunkId == chunkId) {
+                        currentPlaybackTrack = null
+                        currentPlaybackChunkId = null
+                    }
+                }
+                callback?.onPlaybackStateChanged(chunkId, false)
+            }
+        }
+    }
+
+    fun stopPlayback() {
+        synchronized(playbackLock) {
+            val track = currentPlaybackTrack
+            val id = currentPlaybackChunkId
+            currentPlaybackTrack = null
+            currentPlaybackChunkId = null
+            if (track != null) {
+                Log.d(TAG, "stopPlayback: stopping playback for $id")
+                runCatching {
+                    track.stop()
+                    track.release()
+                }
+                callback?.onPlaybackStateChanged(id ?: "", false)
             }
         }
     }
 
     fun retryTranscription(chunkId: String) {
-        transcriptionQueue.markRetry(chunkId)
+        // UI sends Firestore document IDs ("chunk_<uuid>"), queue uses raw UUIDs
+        val queueId = chunkId.removePrefix("chunk_")
+        Log.d(TAG, "retryTranscription: requested chunkId=$chunkId, resolved queueId=$queueId")
+
+        val snapshot = transcriptionQueue.snapshot()
+        val chunk = snapshot.items.find { it.id == queueId }
+        if (chunk == null) {
+            Log.w(TAG, "retryTranscription: chunk not found for queueId=$queueId")
+            return
+        }
+        Log.d(TAG, "retryTranscription: found chunk id=${chunk.id}, status=${chunk.status}, attempts=${chunk.attempts}, audioPath=${chunk.audioFilePath}")
+
+        transcriptionQueue.markRetry(queueId)
+        Log.d(TAG, "retryTranscription: marked as retry, scheduling queue processing")
         scheduleTranscriptionQueueProcessing("retry_requested")
     }
 
@@ -1742,7 +1909,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "text" to resolvedText,
                 "timestamp" to chunk.createdAtMs,
                 "isPartial" to (status == TranscriptStatus.PROCESSING),
-                "status" to status.name
+                "status" to status.name,
+                "audioFileName" to java.io.File(chunk.audioFilePath).name
             )
             payload["errorMessage"] = errorMessage
 
@@ -1793,13 +1961,24 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         resetSignalingClient(startServer = isHostingEnabled)
     }
 
+    private fun sendSignalingMessage(message: String) {
+        val shouldUseInternet =
+            activeSignalingTransport == ConnectionTransportMode.INTERNET ||
+                (connectedPeer?.connectionTransport == ConnectionTransportMode.INTERNET && firestoreSignalingClient.hasActiveSession())
+        if (shouldUseInternet) {
+            firestoreSignalingClient.sendMessage(message)
+        } else {
+            signalingClient.sendMessage(message)
+        }
+    }
+
     private fun sendTransmissionStateToPeer() {
         val message = if (isTransmitting) "TX:ON" else "TX:OFF"
         val sentByDataChannel = sendControlMessage(message)
         val canSendBySignaling =
             connectionStatus != ConnectionStatus.DISCONNECTED && connectionStatus != ConnectionStatus.ERROR
         if (canSendBySignaling) {
-            signalingClient.sendMessage(message)
+            sendSignalingMessage(message)
         }
         Log.d(
             TAG,
@@ -1840,7 +2019,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val canSendBySignaling =
             connectionStatus != ConnectionStatus.DISCONNECTED && connectionStatus != ConnectionStatus.ERROR
         if (canSendBySignaling) {
-            signalingClient.sendMessage(message)
+            sendSignalingMessage(message)
         }
         Log.i(
             TAG,

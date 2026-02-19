@@ -61,7 +61,9 @@ fun AppNavigation(
     onConnectToDevice: (Device) -> Unit,
     onDisconnectClick: () -> Unit = {},
     onPlayAudio: ((String) -> Unit)? = null,
-    onRetryTranscription: ((String) -> Unit)? = null
+    onStopAudio: (() -> Unit)? = null,
+    onRetryTranscription: ((String) -> Unit)? = null,
+    currentlyPlayingId: String? = null
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
@@ -154,7 +156,9 @@ fun AppNavigation(
                     onStartTripClick = onStartTripClick,
                     onEndTripClick = onEndTripClick,
                     onPlayTranscriptAudio = onPlayAudio,
-                    onRetryTranscription = onRetryTranscription
+                    onStopTranscriptAudio = onStopAudio,
+                    onRetryTranscription = onRetryTranscription,
+                    currentlyPlayingId = currentlyPlayingId
                 )
             }
             composable(Screen.TripHistory.route) {
@@ -182,6 +186,7 @@ fun AppNavigation(
                     vadStartDelaySeconds = uiState.vadStartDelaySeconds,
                     vadStopDelaySeconds = uiState.vadStopDelaySeconds,
                     autoConnectNearbyFriends = uiState.autoConnectNearbyFriends,
+                    presenceUpdateIntervalSeconds = uiState.presenceUpdateIntervalSeconds,
                     onModeChange = { settingsViewModel.onModeChange(it) },
                     onStartCommandChange = { settingsViewModel.onStartCommandChange(it) },
                     onStopCommandChange = { settingsViewModel.onStopCommandChange(it) },
@@ -192,6 +197,7 @@ fun AppNavigation(
                     onVadStartDelayChange = { settingsViewModel.onVadStartDelayChange(it) },
                     onVadStopDelayChange = { settingsViewModel.onVadStopDelayChange(it) },
                     onAutoConnectNearbyFriendsChange = { settingsViewModel.onAutoConnectNearbyFriendsChange(it) },
+                    onPresenceUpdateIntervalChange = { settingsViewModel.onPresenceUpdateIntervalChange(it) },
                     onNavigateBack = { navController.popBackStack() },
                     onTestAudio = { showAudioTest = true },
                     onLogout = {
@@ -211,7 +217,11 @@ fun AppNavigation(
                 TripDetailScreen(
                     tripId = tripId,
                     viewModel = tripDetailViewModel,
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = { navController.popBackStack() },
+                    onPlayAudio = onPlayAudio,
+                    onStopAudio = onStopAudio,
+                    onRetryTranscription = onRetryTranscription,
+                    currentlyPlayingId = currentlyPlayingId
                 )
             }
             composable(Screen.Pairing.route) {

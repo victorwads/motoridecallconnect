@@ -3,6 +3,7 @@ package dev.wads.motoridecallconnect.ui.common
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import dev.wads.motoridecallconnect.data.repository.DeviceDiscoveryRepository
+import dev.wads.motoridecallconnect.data.repository.InternetConnectivityRepository
 import dev.wads.motoridecallconnect.data.repository.SocialRepository
 import dev.wads.motoridecallconnect.data.repository.TripRepository
 import dev.wads.motoridecallconnect.data.repository.WifiDirectRepository
@@ -17,7 +18,8 @@ class ViewModelFactory(
     private val repository: TripRepository,
     private val socialRepository: SocialRepository,
     private val deviceDiscoveryRepository: DeviceDiscoveryRepository,
-    private val wifiDirectRepository: WifiDirectRepository
+    private val wifiDirectRepository: WifiDirectRepository,
+    private val internetConnectivityRepository: InternetConnectivityRepository
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ActiveTripViewModel::class.java)) {
@@ -42,7 +44,12 @@ class ViewModelFactory(
         }
         if (modelClass.isAssignableFrom(PairingViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return PairingViewModel(deviceDiscoveryRepository, wifiDirectRepository) as T
+            return PairingViewModel(
+                localRepository = deviceDiscoveryRepository,
+                wifiDirectRepository = wifiDirectRepository,
+                internetRepository = internetConnectivityRepository,
+                socialRepository = socialRepository
+            ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

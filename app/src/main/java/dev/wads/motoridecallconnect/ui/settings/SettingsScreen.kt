@@ -78,6 +78,7 @@ fun SettingsScreen(
     vadStartDelaySeconds: Float,
     vadStopDelaySeconds: Float,
     autoConnectNearbyFriends: Boolean,
+    presenceUpdateIntervalSeconds: Int,
     onModeChange: (OperatingMode) -> Unit,
     onStartCommandChange: (String) -> Unit,
     onStopCommandChange: (String) -> Unit,
@@ -88,6 +89,7 @@ fun SettingsScreen(
     onVadStartDelayChange: (Float) -> Unit,
     onVadStopDelayChange: (Float) -> Unit,
     onAutoConnectNearbyFriendsChange: (Boolean) -> Unit,
+    onPresenceUpdateIntervalChange: (Int) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
     onLogout: () -> Unit
@@ -102,6 +104,8 @@ fun SettingsScreen(
     val selectedNativeLanguage = remember(nativeSpeechLanguageTag) {
         NativeSpeechLanguageCatalog.findByTag(nativeSpeechLanguageTag) ?: NativeSpeechLanguageCatalog.defaultOption
     }
+    var presenceIntervalExpanded by remember { mutableStateOf(false) }
+    val presenceIntervalOptions = remember { listOf(15, 30, 60, 120) }
     
     // Mock State - In a real app, this would come from a ViewModel/DataStore
     var preferBluetooth by remember { mutableStateOf(true) }
@@ -203,6 +207,59 @@ fun SettingsScreen(
                 )
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = stringResource(R.string.presence_interval_title),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = stringResource(R.string.presence_interval_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            ExposedDropdownMenuBox(
+                expanded = presenceIntervalExpanded,
+                onExpandedChange = { presenceIntervalExpanded = !presenceIntervalExpanded }
+            ) {
+                OutlinedTextField(
+                    value = stringResource(R.string.presence_interval_value, presenceUpdateIntervalSeconds),
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth(),
+                    label = { Text(stringResource(R.string.presence_interval_title)) },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = presenceIntervalExpanded)
+                    }
+                )
+                DropdownMenu(
+                    expanded = presenceIntervalExpanded,
+                    onDismissRequest = { presenceIntervalExpanded = false }
+                ) {
+                    presenceIntervalOptions.forEach { optionSeconds ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.presence_interval_value, optionSeconds),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (optionSeconds == presenceUpdateIntervalSeconds) {
+                                        FontWeight.SemiBold
+                                    } else {
+                                        FontWeight.Normal
+                                    }
+                                )
+                            },
+                            onClick = {
+                                onPresenceUpdateIntervalChange(optionSeconds)
+                                presenceIntervalExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
             if (operatingMode == OperatingMode.VOICE_ACTIVITY_DETECTION) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
@@ -250,10 +307,10 @@ fun SettingsScreen(
 
             SttEngine.entries.forEach { engine ->
                 val selected = sttEngine == engine
-                val labelRes = if (engine == SttEngine.WHISPER) {
-                    R.string.stt_engine_whisper
-                } else {
-                    R.string.stt_engine_native
+                val labelRes = when (engine) {
+                    SttEngine.WHISPER -> R.string.stt_engine_whisper
+                    SttEngine.WHISPER_KIT -> R.string.stt_engine_whisper_kit
+                    SttEngine.NATIVE -> R.string.stt_engine_native
                 }
                 Row(
                     Modifier
@@ -526,6 +583,7 @@ private fun SettingsScreenPreview() {
                 vadStartDelaySeconds = 0f,
                 vadStopDelaySeconds = 1.5f,
                 autoConnectNearbyFriends = false,
+                presenceUpdateIntervalSeconds = 30,
                 onModeChange = {},
                 onStartCommandChange = {},
                 onStopCommandChange = {},
@@ -536,6 +594,7 @@ private fun SettingsScreenPreview() {
                 onVadStartDelayChange = {},
                 onVadStopDelayChange = {},
                 onAutoConnectNearbyFriendsChange = {},
+                onPresenceUpdateIntervalChange = {},
                 onTestAudio = {},
                 onNavigateBack = {},
                 onLogout = {}

@@ -214,7 +214,8 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                                 text = resolvedText,
                                 timestamp = line.timestamp,
                                 status = resolvedStatus,
-                                errorMessage = document.getString("errorMessage")?.takeIf { it.isNotBlank() }
+                                errorMessage = document.getString("errorMessage")?.takeIf { it.isNotBlank() },
+                                audioFileName = document.getString("audioFileName")?.takeIf { it.isNotBlank() }
                             )
                         }
                         trySend(entries)

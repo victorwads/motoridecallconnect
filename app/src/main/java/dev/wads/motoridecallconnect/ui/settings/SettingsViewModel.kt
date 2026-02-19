@@ -19,6 +19,9 @@ private const val DEFAULT_VAD_START_DELAY_SECONDS = 0f
 private const val DEFAULT_VAD_STOP_DELAY_SECONDS = 1.5f
 private const val MIN_VAD_DELAY_SECONDS = 0f
 private const val MAX_VAD_DELAY_SECONDS = 5f
+private const val DEFAULT_PRESENCE_UPDATE_INTERVAL_SECONDS = 30
+private const val MIN_PRESENCE_UPDATE_INTERVAL_SECONDS = 10
+private const val MAX_PRESENCE_UPDATE_INTERVAL_SECONDS = 300
 
 data class SettingsUiState(
     val operatingMode: OperatingMode = OperatingMode.VOICE_COMMAND,
@@ -30,7 +33,8 @@ data class SettingsUiState(
     val whisperModelId: String = WhisperModelCatalog.defaultOption.id,
     val vadStartDelaySeconds: Float = DEFAULT_VAD_START_DELAY_SECONDS,
     val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS,
-    val autoConnectNearbyFriends: Boolean = false
+    val autoConnectNearbyFriends: Boolean = false,
+    val presenceUpdateIntervalSeconds: Int = DEFAULT_PRESENCE_UPDATE_INTERVAL_SECONDS
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -104,6 +108,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 if (saved != null) {
                     _uiState.update { it.copy(autoConnectNearbyFriends = saved) }
                 }
+            }
+        }
+        viewModelScope.launch {
+            preferences.presenceUpdateIntervalSeconds.collect { saved ->
+                val normalized = normalizePresenceIntervalSeconds(saved ?: DEFAULT_PRESENCE_UPDATE_INTERVAL_SECONDS)
+                _uiState.update { it.copy(presenceUpdateIntervalSeconds = normalized) }
             }
         }
     }
@@ -182,6 +192,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun onPresenceUpdateIntervalChange(seconds: Int) {
+        val normalized = normalizePresenceIntervalSeconds(seconds)
+        _uiState.update { it.copy(presenceUpdateIntervalSeconds = normalized) }
+        viewModelScope.launch {
+            preferences.setPresenceUpdateIntervalSeconds(normalized)
+        }
+    }
+
     private fun parseOperatingMode(raw: String?): OperatingMode? {
         if (raw.isNullOrBlank()) {
             return null
@@ -199,5 +217,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun normalizeDelaySeconds(seconds: Float): Float {
         val clamped = seconds.coerceIn(MIN_VAD_DELAY_SECONDS, MAX_VAD_DELAY_SECONDS)
         return (clamped * 10f).roundToInt() / 10f
+    }
+
+    private fun normalizePresenceIntervalSeconds(seconds: Int): Int {
+        return seconds.coerceIn(
+            minimumValue = MIN_PRESENCE_UPDATE_INTERVAL_SECONDS,
+            maximumValue = MAX_PRESENCE_UPDATE_INTERVAL_SECONDS
+        )
     }
 }

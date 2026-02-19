@@ -29,6 +29,7 @@ class UserPreferences(private val context: Context) {
         val VAD_START_DELAY_SECONDS = floatPreferencesKey("vad_start_delay_seconds")
         val VAD_STOP_DELAY_SECONDS = floatPreferencesKey("vad_stop_delay_seconds")
         val AUTO_CONNECT_NEARBY_FRIENDS = booleanPreferencesKey("auto_connect_nearby_friends")
+        val PRESENCE_UPDATE_INTERVAL_SECONDS = intPreferencesKey("presence_update_interval_seconds")
         val MICROPHONE_GAIN = floatPreferencesKey("microphone_gain")
         val OUTPUT_VOLUME_RATIO = floatPreferencesKey("output_volume_ratio")
         val TRANSMISSION_BITRATE_KBPS = intPreferencesKey("transmission_bitrate_kbps")
@@ -97,6 +98,11 @@ class UserPreferences(private val context: Context) {
     val autoConnectNearbyFriends: Flow<Boolean?> = context.dataStore.data
         .map { preferences ->
             preferences[AUTO_CONNECT_NEARBY_FRIENDS]
+        }
+
+    val presenceUpdateIntervalSeconds: Flow<Int?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PRESENCE_UPDATE_INTERVAL_SECONDS]
         }
 
     val microphoneGain: Flow<Float?> = context.dataStore.data
@@ -189,6 +195,12 @@ class UserPreferences(private val context: Context) {
     suspend fun setAutoConnectNearbyFriends(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[AUTO_CONNECT_NEARBY_FRIENDS] = enabled
+        }
+    }
+
+    suspend fun setPresenceUpdateIntervalSeconds(seconds: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PRESENCE_UPDATE_INTERVAL_SECONDS] = seconds
         }
     }
 

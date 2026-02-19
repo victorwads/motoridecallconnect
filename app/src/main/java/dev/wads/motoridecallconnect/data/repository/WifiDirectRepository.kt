@@ -20,6 +20,8 @@ import dev.wads.motoridecallconnect.data.model.Device
 import dev.wads.motoridecallconnect.data.model.WifiDirectState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,9 +67,12 @@ class WifiDirectRepository(context: Context) {
     private var pendingConnect: CompletableDeferred<Result<Device>>? = null
     private var pendingConnectTemplate: Device? = null
     private var cachedPeers: List<WifiP2pDevice> = emptyList()
+    private var connectAttemptCounter: Long = 0L
+    private var activeConnectAttemptId: Long? = null
 
     private val peersChangedListener = WifiP2pManager.PeerListListener { peerList ->
         cachedPeers = peerList.deviceList.toList()
+        Log.d(TAG, "Peer list updated: count=${cachedPeers.size}")
         _discoveredDevices.value = cachedPeers
             .map(Device::fromWifiP2pDevice)
             .distinctBy { it.wifiDirectDeviceAddress ?: it.id }
@@ -105,7 +110,15 @@ class WifiDirectRepository(context: Context) {
                 }
 
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    val isConnected = intent.readNetworkInfo()?.isConnected == true
+                    val networkInfo = intent.readNetworkInfo()
+                    val directInfo = intent.readP2pInfo()
+                    val isConnected = networkInfo?.isConnected == true
+                    Log.i(
+                        TAG,
+                        "Broadcast CONNECTION_CHANGED connected=$isConnected " +
+                            "networkInfo=$networkInfo groupFormed=${directInfo?.groupFormed} " +
+                            "isGroupOwner=${directInfo?.isGroupOwner} ownerIp=${directInfo?.groupOwnerAddress?.hostAddress}"
+                    )
                     if (!isConnected) {
                         _state.update {
                             it.copy(
@@ -117,6 +130,10 @@ class WifiDirectRepository(context: Context) {
                                 connecting = false
                             )
                         }
+                        activeConnectAttemptId = null
+                    }
+                    if (directInfo != null) {
+                        handleConnectionInfo(directInfo)
                     }
                     requestConnectionInfoInternal()
                     requestGroupInfoInternal()
@@ -288,8 +305,11 @@ class WifiDirectRepository(context: Context) {
         }
         val targetAddress = target.wifiDirectDeviceAddress?.takeIf { it.isNotBlank() }
             ?: return Result.failure(IllegalArgumentException("Dispositivo Wi-Fi Direct inválido."))
+        val connectAttemptId = ++connectAttemptCounter
+        activeConnectAttemptId = connectAttemptId
 
         return withContext(Dispatchers.Main.immediate) {
+            Log.i(TAG, "[attempt=$connectAttemptId] Starting Wi-Fi Direct connect. targetAddress=$targetAddress target=${target.name}/${target.id}")
             ensureReceiverRegistered()
             _state.update { it.copy(infrastructureWifiConnected = isInfrastructureWifiConnectedInternal()) }
             _state.update { it.copy(connecting = true, failureMessage = null) }
@@ -310,7 +330,10 @@ class WifiDirectRepository(context: Context) {
             runCatching {
                 manager.connect(currentChannel, config, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
-                        Log.i(TAG, "connect() request accepted for $targetAddress")
+                        Log.i(
+                            TAG,
+                            "[attempt=$connectAttemptId] connect() accepted. Waiting OS confirmation + group info."
+                        )
                         requestConnectionInfoInternal()
                         requestGroupInfoInternal()
                     }
@@ -320,7 +343,8 @@ class WifiDirectRepository(context: Context) {
                         val error = IllegalStateException("Falha ao conectar no peer Wi-Fi Direct: $reasonText")
                         _state.update { it.copy(connecting = false, failureMessage = error.message) }
                         failPendingConnect(error)
-                        Log.w(TAG, "connect failed: $reasonText ($reason)")
+                        activeConnectAttemptId = null
+                        Log.w(TAG, "[attempt=$connectAttemptId] connect failed: $reasonText ($reason)")
                     }
                 })
             }.onFailure { error ->
@@ -330,16 +354,26 @@ class WifiDirectRepository(context: Context) {
                 )
                 _state.update { it.copy(connecting = false, failureMessage = securityError.message) }
                 failPendingConnect(securityError)
+                activeConnectAttemptId = null
                 return@withContext Result.failure(securityError)
             }
 
-            withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+            val result = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
+                while (isActive && !deferred.isCompleted) {
+                    requestConnectionInfoInternal()
+                    requestGroupInfoInternal()
+                    delay(CONNECT_INFO_POLL_INTERVAL_MS)
+                }
                 deferred.await()
             } ?: run {
                 val timeoutError = IllegalStateException("Tempo esgotado ao conectar via Wi-Fi Direct.")
+                Log.w(TAG, "[attempt=$connectAttemptId] Connection timed out waiting group/address details.")
                 failPendingConnect(timeoutError)
+                _state.update { it.copy(connecting = false, failureMessage = timeoutError.message) }
                 Result.failure(timeoutError)
             }
+            activeConnectAttemptId = null
+            result
         }
     }
 
@@ -360,6 +394,7 @@ class WifiDirectRepository(context: Context) {
         }
         failPendingConnect(IllegalStateException("Conexão cancelada pelo usuário."))
         _state.update { it.copy(connecting = false) }
+        activeConnectAttemptId = null
     }
 
     fun refreshState() {
@@ -397,7 +432,13 @@ class WifiDirectRepository(context: Context) {
         if (info == null) {
             return
         }
-        val ownerIp = info.groupOwnerAddress?.hostAddress
+        val ownerIpRaw = info.groupOwnerAddress?.hostAddress
+        val ownerIp = ownerIpRaw?.trim()
+        Log.i(
+            TAG,
+            "ConnectionInfo update: groupFormed=${info.groupFormed}, isGroupOwner=${info.isGroupOwner}, " +
+                "ownerIp=${ownerIp ?: "null"}, pendingConnect=${pendingConnect != null}, attempt=${activeConnectAttemptId ?: -1}"
+        )
         _state.update {
             it.copy(
                 connecting = it.connecting && !info.groupFormed,
@@ -418,11 +459,30 @@ class WifiDirectRepository(context: Context) {
             return
         }
         val template = pendingConnectTemplate
-        val resolvedIp = ownerIp?.trim().orEmpty()
-        if (template == null || resolvedIp.isBlank()) {
-            val error = IllegalStateException("Grupo Wi-Fi Direct formado sem endereço do group owner.")
+        if (template == null) {
+            val error = IllegalStateException("Grupo Wi-Fi Direct formado sem template de conexão.")
             failPendingConnect(error)
             _state.update { it.copy(connecting = false, failureMessage = error.message) }
+            return
+        }
+        val resolvedIp = resolveOwnerIp(info, ownerIp)
+        if (resolvedIp.isNullOrBlank()) {
+            val error = if (info.isGroupOwner) {
+                IllegalStateException(
+                    "Seu aparelho virou Group Owner no Wi-Fi Direct. Refaça iniciando grupo no Host e conectando do Client."
+                )
+            } else {
+                IllegalStateException("Grupo Wi-Fi Direct formado sem endereço do Group Owner.")
+            }
+            if (info.isGroupOwner) {
+                Log.w(TAG, "Connection formed but local became Group Owner for a client-initiated connect. Failing attempt.")
+                failPendingConnect(error)
+                _state.update { it.copy(connecting = false, failureMessage = error.message) }
+            } else {
+                Log.w(TAG, "Connection formed without owner IP yet. Waiting for next info update.")
+                requestConnectionInfoInternal()
+                requestGroupInfoInternal()
+            }
             return
         }
 
@@ -438,6 +498,7 @@ class WifiDirectRepository(context: Context) {
                 )
             )
         )
+        Log.i(TAG, "Wi-Fi Direct connect resolved endpoint=$resolvedIp:${template.port ?: DEFAULT_SIGNALING_PORT}")
         _state.update { it.copy(connecting = false, connected = true, groupFormed = true, failureMessage = null) }
     }
 
@@ -445,8 +506,12 @@ class WifiDirectRepository(context: Context) {
         if (group == null) {
             return
         }
-        val ownerIp = group.owner?.deviceAddress
-        Log.d(TAG, "Group info: ownerDevice=${group.owner?.deviceName} ownerMac=$ownerIp")
+        Log.d(
+            TAG,
+            "Group info: networkName=${group.networkName}, isOwner=${group.isGroupOwner}, " +
+                "ownerDevice=${group.owner?.deviceName}, ownerMac=${group.owner?.deviceAddress}, " +
+                "clients=${group.clientList?.size ?: 0}"
+        )
     }
 
     private fun ensureReceiverRegistered() {
@@ -503,12 +568,27 @@ class WifiDirectRepository(context: Context) {
     }
 
     private fun failPendingConnect(error: Throwable) {
+        Log.w(TAG, "Failing pending Wi-Fi Direct connect: ${error.message}", error)
         val pending = pendingConnect ?: return
         if (!pending.isCompleted) {
             pending.complete(Result.failure(error))
         }
         pendingConnect = null
         pendingConnectTemplate = null
+    }
+
+    private fun resolveOwnerIp(info: WifiP2pInfo, ownerIp: String?): String? {
+        if (!ownerIp.isNullOrBlank()) {
+            return ownerIp
+        }
+        if (!info.groupFormed) {
+            return null
+        }
+        if (info.isGroupOwner) {
+            return null
+        }
+        // Android Wi-Fi P2P GO usually uses this default.
+        return DEFAULT_GROUP_OWNER_FALLBACK_IP
     }
 
     private fun reasonToMessage(reason: Int): String {
@@ -549,9 +629,20 @@ class WifiDirectRepository(context: Context) {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun Intent.readP2pInfo(): WifiP2pInfo? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+        } else {
+            getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+        }
+    }
+
     companion object {
         private const val TAG = "WifiDirectRepo"
         private const val DEFAULT_SIGNALING_PORT = 8080
         private const val CONNECT_TIMEOUT_MS = 25_000L
+        private const val CONNECT_INFO_POLL_INTERVAL_MS = 1_200L
+        private const val DEFAULT_GROUP_OWNER_FALLBACK_IP = "192.168.49.1"
     }
 }

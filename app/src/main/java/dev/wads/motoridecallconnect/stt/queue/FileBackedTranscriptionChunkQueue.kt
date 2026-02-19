@@ -112,12 +112,17 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
     override fun readAudioBytes(chunk: QueuedTranscriptionChunk): ByteArray? {
         synchronized(lock) {
             val file = File(chunk.audioFilePath)
+            Log.d(TAG, "readAudioBytes: chunk=${chunk.id}, path=${chunk.audioFilePath}, exists=${file.exists()}, size=${if (file.exists()) file.length() else -1}")
             if (!file.exists()) {
+                Log.w(TAG, "readAudioBytes: audio file NOT found at ${chunk.audioFilePath}")
                 return null
             }
             return runCatching { file.readBytes() }
+                .onSuccess { bytes ->
+                    Log.d(TAG, "readAudioBytes: successfully read ${bytes.size} bytes for chunk=${chunk.id}")
+                }
                 .onFailure { error ->
-                    Log.e(TAG, "Failed reading queued audio chunk id=${chunk.id}", error)
+                    Log.e(TAG, "readAudioBytes: failed reading queued audio chunk id=${chunk.id}", error)
                 }
                 .getOrNull()
         }
@@ -127,6 +132,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         synchronized(lock) {
             val index = items.indexOfFirst { it.id == chunkId }
             if (index < 0) {
+                Log.w(TAG, "markSucceeded: chunk not found id=$chunkId")
                 return
             }
 
@@ -137,7 +143,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             )
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
-            // Keep file for replay as requested
+            Log.d(TAG, "markSucceeded: chunk=$chunkId -> SUCCESS, audio kept at ${updated.audioFilePath}")
+            // Audio file is intentionally kept for replay
         }
     }
 
@@ -145,6 +152,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         synchronized(lock) {
             val index = items.indexOfFirst { it.id == chunkId }
             if (index < 0) {
+                Log.w(TAG, "markFailed: chunk not found id=$chunkId")
                 return
             }
 
@@ -155,6 +163,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             )
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
+            Log.d(TAG, "markFailed: chunk=$chunkId -> FAILED reason='${updated.failureReason}', audio kept at ${updated.audioFilePath}")
+            // Audio file is intentionally kept for retry
         }
     }
 
@@ -162,6 +172,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         synchronized(lock) {
             val index = items.indexOfFirst { it.id == chunkId }
             if (index < 0) {
+                Log.w(TAG, "markRetry: chunk not found id=$chunkId")
                 return
             }
 
@@ -173,6 +184,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             ) 
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
+            Log.d(TAG, "markRetry: chunk=$chunkId -> PENDING, audio at ${updated.audioFilePath}")
         }
     }
 

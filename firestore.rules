@@ -11,6 +11,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    function isFriend(ownerUid, possibleFriendUid) {
+      return isSignedIn()
+        && possibleFriendUid != null
+        && exists(/databases/$(database)/documents/Accounts/$(ownerUid)/Friends/$(possibleFriendUid));
+    }
+
     // -------------------------
     // AccountsPublicInfo/{uid}
     // Public get allowed, list blocked
@@ -101,6 +107,24 @@ service cloud.firestore {
         // update:
         // usually you don't need updates for requests; keep it locked
         allow update: if false;
+      }
+
+      // Private connection info:
+      // - Owner writes and reads
+      // - Friends can read for internet/WebRTC negotiation/debug
+      match /ConnectionPrivate/{docId} {
+        allow get, list: if isOwner(uid) || isFriend(uid, request.auth.uid);
+        allow create, update, delete: if isOwner(uid);
+      }
+
+      // Signaling inbox used by internet mode:
+      // - Owner reads/deletes
+      // - Friends can create signaling messages
+      match /SignalInbox/{messageId} {
+        allow get, list: if isOwner(uid);
+        allow create: if isOwner(uid) || isFriend(uid, request.auth.uid);
+        allow update: if false;
+        allow delete: if isOwner(uid);
       }
 
       // Any other subcollections/docs under Accounts/{uid}/...

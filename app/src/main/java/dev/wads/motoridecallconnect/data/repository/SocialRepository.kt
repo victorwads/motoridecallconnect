@@ -1,14 +1,15 @@
 package dev.wads.motoridecallconnect.data.repository
 
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import dev.wads.motoridecallconnect.data.model.FriendRequest
 import dev.wads.motoridecallconnect.data.model.UserProfile
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 class SocialRepository {
@@ -31,7 +32,7 @@ class SocialRepository {
         )
         firestore.collection(FirestorePaths.ACCOUNTS_PUBLIC_INFO)
             .document(user.uid)
-            .set(profile)
+            .set(profile, SetOptions.merge())
             .await()
     }
 
@@ -93,6 +94,13 @@ class SocialRepository {
     suspend fun acceptFriendRequest(request: FriendRequest) {
         val myUid = currentUserId ?: return
         val targetUid = request.fromUid
+        val targetDisplayName = UserRepository.getInstance().getUserProfile(targetUid)
+            ?.displayName
+            ?.takeIf { it.isNotBlank() }
+            ?: "Friend"
+        val myDisplayName = auth.currentUser?.displayName
+            ?.takeIf { it.isNotBlank() }
+            ?: "Friend"
 
         firestore.runTransaction { transaction ->
             // 1. Add to my friends
@@ -106,7 +114,11 @@ class SocialRepository {
             // but for simple lists, copying name is common. 
             // Let's copy basic info from the request or fetch public info.
             // For transaction safety within rules, we just set true or minimal info.
-            val friendData = mapOf("uid" to targetUid, "timestamp" to System.currentTimeMillis())
+            val friendData = mapOf(
+                "uid" to targetUid,
+                "displayName" to targetDisplayName,
+                "timestamp" to System.currentTimeMillis()
+            )
             transaction.set(myFriendRef, friendData)
 
             // 2. Add me to their friends (Reciprocal)
@@ -115,7 +127,11 @@ class SocialRepository {
                 .collection(FirestorePaths.FRIENDS)
                 .document(myUid)
             
-            val myData = mapOf("uid" to myUid, "timestamp" to System.currentTimeMillis())
+            val myData = mapOf(
+                "uid" to myUid,
+                "displayName" to myDisplayName,
+                "timestamp" to System.currentTimeMillis()
+            )
             transaction.set(theirFriendRef, myData)
 
             // 3. Delete Request
@@ -157,29 +173,45 @@ class SocialRepository {
                 return@addSnapshotListener 
             }
             
-            // This is a list of IDs mainly. We might need to fetch profiles.
-            // For a robust app, we'd fetch profiles for each friend ID.
-            // For now, let's assume we map the docs to profiles or just emit IDs.
-            // To simplify, let's just return the list of friends as basic profiles from the stored map if possible
-            // or fetch them. 
-            // Given the complexity of "live" fetching list of secondary docs in Firestore, 
-            // usually you store a snapshot of the name in the Friend doc or query PublicInfo.
-            // Let's implement a basic version that just returns what's in the Friends collection.
-            
-            if (snapshot != null) {
-                // If we want real profiles, we'd query AccountsPublicInfo where UID in [...].
-                // Firestore 'in' query supports up to 10 items.
-                // For a full scaling app we need a different approach (paging).
-                // Let's just return objects from the data we saved in acceptFriendRequest
-                val friends = snapshot.documents.map { doc ->
-                    UserProfile(
-                        uid = doc.getString("uid") ?: doc.id,
-                        displayName = "Friend" // Placeholder, real app should fetch or store name
-                    )
-                }
+            launch {
+                val friends = snapshot?.documents.orEmpty()
+                    .map { doc -> doc.getString("uid") ?: doc.id }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .map { friendUid ->
+                        val fallbackName = snapshot?.documents
+                            ?.firstOrNull { (it.getString("uid") ?: it.id) == friendUid }
+                            ?.getString("displayName")
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "Friend"
+                        UserRepository.getInstance().getUserProfile(friendUid)
+                            ?.copy(uid = friendUid)
+                            ?: UserProfile(uid = friendUid, displayName = fallbackName)
+                    }
+                    .sortedBy { it.displayName.lowercase() }
                 trySend(friends)
             }
         }
         awaitClose { listener.remove() }
+    }
+
+    suspend fun getFriendsOnce(): List<UserProfile> {
+        val uid = currentUserId ?: return emptyList()
+        val snapshot = firestore.collection(FirestorePaths.ACCOUNTS)
+            .document(uid)
+            .collection(FirestorePaths.FRIENDS)
+            .get()
+            .await()
+
+        return snapshot.documents
+            .map { doc -> doc.getString("uid") ?: doc.id }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .map { friendUid ->
+                UserRepository.getInstance().getUserProfile(friendUid)
+                    ?.copy(uid = friendUid)
+                    ?: UserProfile(uid = friendUid, displayName = "Friend")
+            }
+            .sortedBy { it.displayName.lowercase() }
     }
 }

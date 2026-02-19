@@ -49,9 +49,7 @@ import com.google.firebase.auth.FirebaseAuth
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
-import dev.wads.motoridecallconnect.ui.components.TranscriptQueueViewItem
-import dev.wads.motoridecallconnect.ui.components.TranscriptQueueViewStatus
-import dev.wads.motoridecallconnect.ui.components.TripTranscriptPanel
+import dev.wads.motoridecallconnect.ui.components.FullTranscriptCard
 import dev.wads.motoridecallconnect.data.repository.UserRepository
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonSize
@@ -65,7 +63,9 @@ fun ActiveTripScreen(
     onStartTripClick: () -> Unit,
     onEndTripClick: () -> Unit,
     onPlayTranscriptAudio: ((String) -> Unit)? = null,
-    onRetryTranscription: ((String) -> Unit)? = null
+    onStopTranscriptAudio: (() -> Unit)? = null,
+    onRetryTranscription: ((String) -> Unit)? = null,
+    currentlyPlayingId: String? = null
 ) {
     Column(
         modifier = Modifier
@@ -173,61 +173,43 @@ fun ActiveTripScreen(
 
         // --- Transcription List ---
         if (uiState.isTripActive || uiState.transcriptEntries.isNotEmpty() || uiState.transcriptQueue.isNotEmpty()) {
-            StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Call) {
-                val queueStatusText = when {
-                    uiState.transcriptQueueProcessingCount > 0 ->
-                        stringResource(
-                            R.string.transcription_status_processing,
-                            uiState.transcriptQueueProcessingCount,
-                            uiState.transcriptQueuePendingCount
-                        )
-                    uiState.transcriptQueuePendingCount > 0 ->
-                        stringResource(R.string.transcription_status_pending, uiState.transcriptQueuePendingCount)
-                    uiState.transcriptQueueFailedCount > 0 ->
-                        stringResource(R.string.transcription_status_failed, uiState.transcriptQueueFailedCount)
-                    else -> stringResource(R.string.transcription_status_idle)
-                }
-
-                TripTranscriptPanel(
-                    transcriptItems = uiState.transcriptEntries.map { entry ->
-                        TranscriptFeedItem(
-                            id = entry.id,
-                            authorId = entry.authorId,
-                            authorName = entry.authorName,
-                            text = entry.text,
-                            timestampMs = entry.timestampMs,
-                            status = entry.status,
-                            errorMessage = entry.errorMessage
-                        )
-                    },
-                    emptyText = stringResource(R.string.transcription_waiting_speech),
-                    queueStatusText = queueStatusText,
-                    queueItems = uiState.transcriptQueue.map { queueItem ->
-                        TranscriptQueueViewItem(
-                            id = queueItem.id,
-                            timestampMs = queueItem.timestampMs,
-                            status = queueItem.status.toViewStatus(),
-                            failureReason = queueItem.failureReason
-                        )
-                    },
-                    maxTranscriptItems = 10,
-                    maxQueueItems = 10,
-                    onPlayAudio = onPlayTranscriptAudio,
-                    onRetry = onRetryTranscription
-                )
+            val queueStatusText = when {
+                uiState.transcriptQueueProcessingCount > 0 ->
+                    stringResource(
+                        R.string.transcription_status_processing,
+                        uiState.transcriptQueueProcessingCount,
+                        uiState.transcriptQueuePendingCount
+                    )
+                uiState.transcriptQueuePendingCount > 0 ->
+                    stringResource(R.string.transcription_status_pending, uiState.transcriptQueuePendingCount)
+                uiState.transcriptQueueFailedCount > 0 ->
+                    stringResource(R.string.transcription_status_failed, uiState.transcriptQueueFailedCount)
+                else -> stringResource(R.string.transcription_status_idle)
             }
+
+            FullTranscriptCard(
+                transcriptItems = uiState.transcriptEntries.map { entry ->
+                    TranscriptFeedItem(
+                        id = entry.id,
+                        authorId = entry.authorId,
+                        authorName = entry.authorName,
+                        text = entry.text,
+                        timestampMs = entry.timestampMs,
+                        status = entry.status,
+                        errorMessage = entry.errorMessage
+                    )
+                },
+                emptyText = stringResource(R.string.transcription_waiting_speech),
+                queueStatusText = queueStatusText,
+                maxTranscriptItems = 10,
+                onPlayAudio = onPlayTranscriptAudio,
+                onStopAudio = onStopTranscriptAudio,
+                onRetry = onRetryTranscription,
+                currentlyPlayingId = currentlyPlayingId
+            )
         }
         
         Spacer(modifier = Modifier.height(30.dp))
-    }
-}
-
-private fun TranscriptQueueItemStatus.toViewStatus(): TranscriptQueueViewStatus {
-    return when (this) {
-        TranscriptQueueItemStatus.PENDING -> TranscriptQueueViewStatus.PENDING
-        TranscriptQueueItemStatus.PROCESSING -> TranscriptQueueViewStatus.PROCESSING
-        TranscriptQueueItemStatus.FAILED -> TranscriptQueueViewStatus.FAILED
-        TranscriptQueueItemStatus.SUCCESS -> TranscriptQueueViewStatus.SUCCESS
     }
 }
 

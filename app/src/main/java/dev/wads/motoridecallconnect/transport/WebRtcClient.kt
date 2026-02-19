@@ -56,7 +56,11 @@ class WebRtcClient(
             .createPeerConnectionFactory()
     }
 
-    private val rtcConfig = PeerConnection.RTCConfiguration(emptyList()).apply {
+    private val rtcConfig = PeerConnection.RTCConfiguration(
+        listOf(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        )
+    ).apply {
         iceTransportsType = PeerConnection.IceTransportsType.ALL
         continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE

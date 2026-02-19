@@ -15,7 +15,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -34,9 +33,9 @@ import androidx.compose.ui.unit.dp
 import dev.wads.motoridecallconnect.R
 import dev.wads.motoridecallconnect.ui.components.BigButton
 import dev.wads.motoridecallconnect.ui.components.ButtonVariant
+import dev.wads.motoridecallconnect.ui.components.FullTranscriptCard
 import dev.wads.motoridecallconnect.ui.components.StatusCard
 import dev.wads.motoridecallconnect.ui.components.TranscriptFeedItem
-import dev.wads.motoridecallconnect.ui.components.TripTranscriptPanel
 import dev.wads.motoridecallconnect.ui.components.UserProfileView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -46,7 +45,11 @@ import java.util.Locale
 fun TripDetailScreen(
     tripId: String,
     viewModel: TripDetailViewModel? = null,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onPlayAudio: ((String) -> Unit)? = null,
+    onStopAudio: (() -> Unit)? = null,
+    onRetryTranscription: ((String) -> Unit)? = null,
+    currentlyPlayingId: String? = null
 ) {
     LaunchedEffect(tripId) {
         viewModel?.loadTrip(tripId)
@@ -123,23 +126,26 @@ fun TripDetailScreen(
                         }
                     }
 
-                    StatusCard(title = stringResource(R.string.full_transcript_title), icon = Icons.Default.Description) {
-                        TripTranscriptPanel(
-                            transcriptItems = uiState.transcripts.map { entry ->
-                                TranscriptFeedItem(
-                                    id = entry.id,
-                                    authorId = entry.authorId,
-                                    authorName = entry.authorName,
-                                    text = entry.text,
-                                    timestampMs = entry.timestamp,
-                                    status = entry.status,
-                                    errorMessage = entry.errorMessage
-                                )
-                            },
-                            emptyText = stringResource(R.string.no_transcript_records),
-                            maxTranscriptItems = 500
-                        )
-                    }
+                    FullTranscriptCard(
+                        transcriptItems = uiState.transcripts.map { entry ->
+                            TranscriptFeedItem(
+                                id = entry.id,
+                                authorId = entry.authorId,
+                                authorName = entry.authorName,
+                                text = entry.text,
+                                timestampMs = entry.timestamp,
+                                status = entry.status,
+                                errorMessage = entry.errorMessage,
+                                audioFileName = entry.audioFileName
+                            )
+                        },
+                        emptyText = stringResource(R.string.no_transcript_records),
+                        maxTranscriptItems = 500,
+                        onPlayAudio = onPlayAudio,
+                        onStopAudio = onStopAudio,
+                        onRetry = onRetryTranscription,
+                        currentlyPlayingId = currentlyPlayingId
+                    )
 
                     BigButton(
                         text = stringResource(R.string.delete_trip),

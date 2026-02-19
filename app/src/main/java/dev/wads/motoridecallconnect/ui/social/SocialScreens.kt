@@ -94,7 +94,32 @@ fun FriendsList(friends: List<UserProfile>, viewModel: SocialViewModel) {
                         modifier = Modifier.padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        UserProfileView(userId = friend.uid)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            UserProfileView(userId = friend.uid)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Último online: ${
+                                    if (friend.lastOnlineTime > 0L) {
+                                        java.text.SimpleDateFormat(
+                                            "yyyy-MM-dd HH:mm:ss",
+                                            java.util.Locale.getDefault()
+                                        ).format(java.util.Date(friend.lastOnlineTime))
+                                    } else {
+                                        "desconhecido"
+                                    }
+                                }",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!friend.availableRoom.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Sala ativa: ${friend.availableRoom}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }
