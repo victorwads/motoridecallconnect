@@ -33,6 +33,7 @@ data class SettingsUiState(
     val whisperModelId: String = WhisperModelCatalog.defaultOption.id,
     val vadStartDelaySeconds: Float = DEFAULT_VAD_START_DELAY_SECONDS,
     val vadStopDelaySeconds: Float = DEFAULT_VAD_STOP_DELAY_SECONDS,
+    val preferBluetoothAutomatically: Boolean = true,
     val autoConnectNearbyFriends: Boolean = false,
     val presenceUpdateIntervalSeconds: Int = DEFAULT_PRESENCE_UPDATE_INTERVAL_SECONDS
 )
@@ -101,6 +102,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 if (saved != null) {
                     _uiState.update { it.copy(vadStopDelaySeconds = normalizeDelaySeconds(saved)) }
                 }
+            }
+        }
+        viewModelScope.launch {
+            preferences.preferBluetoothAutomatically.collect { enabled ->
+                _uiState.update { it.copy(preferBluetoothAutomatically = enabled) }
             }
         }
         viewModelScope.launch {
@@ -182,6 +188,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(vadStopDelaySeconds = normalized) }
         viewModelScope.launch {
             preferences.setVadStopDelaySeconds(normalized)
+        }
+    }
+
+    fun onPreferBluetoothAutoChange(enabled: Boolean) {
+        _uiState.update { it.copy(preferBluetoothAutomatically = enabled) }
+        viewModelScope.launch {
+            preferences.setPreferBluetoothAutomatically(enabled)
         }
     }
 

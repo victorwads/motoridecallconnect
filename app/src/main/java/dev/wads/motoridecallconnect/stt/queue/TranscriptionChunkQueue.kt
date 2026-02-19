@@ -12,6 +12,8 @@ data class QueuedTranscriptionChunk(
     val tripId: String,
     val hostUid: String?,
     val tripPath: String?,
+    val sourceAuthorUid: String?,
+    val sourceAuthorName: String?,
     val createdAtMs: Long,
     val durationMs: Long,
     val status: TranscriptionChunkStatus,
@@ -36,6 +38,9 @@ interface TranscriptionChunkQueue {
         tripId: String,
         hostUid: String?,
         tripPath: String?,
+        chunkId: String? = null,
+        sourceAuthorUid: String? = null,
+        sourceAuthorName: String? = null,
         createdAtMs: Long,
         durationMs: Long
     ): QueuedTranscriptionChunk?
@@ -55,6 +60,8 @@ interface TranscriptionChunkQueue {
      * Used when the STT engine changes and all items need to be re-processed.
      */
     fun resetAllToPending()
+
+    fun findById(chunkId: String): QueuedTranscriptionChunk?
 
     fun snapshot(): TranscriptionQueueSnapshot
 }

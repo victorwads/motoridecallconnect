@@ -142,7 +142,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                 tripState.isTripActive,
                 tripState.currentTripId,
                 tripState.hostUid,
-                tripState.tripPath
+                tripState.tripPath,
+                preferBluetoothAutomatically = settingsState.preferBluetoothAutomatically
             )
             boundService.setHostingEnabled(pairingViewModel.isHosting.value)
 
@@ -188,6 +189,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     settingsState.whisperModelId,
                     settingsState.vadStartDelaySeconds,
                     settingsState.vadStopDelaySeconds,
+                    settingsState.preferBluetoothAutomatically,
                     tripState.isTripActive,
                     tripState.currentTripId,
                     tripState.hostUid,
@@ -205,7 +207,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                         tripState.isTripActive,
                         tripState.currentTripId,
                         tripState.hostUid,
-                        tripState.tripPath
+                        tripState.tripPath,
+                        preferBluetoothAutomatically = settingsState.preferBluetoothAutomatically
                     )
                 }
 
@@ -251,7 +254,8 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                                 trip.isTripActive,
                                 trip.currentTripId,
                                 trip.hostUid,
-                                trip.tripPath
+                                trip.tripPath,
+                                preferBluetoothAutomatically = settings.preferBluetoothAutomatically
                             )
                         }
                     },
@@ -268,7 +272,9 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     },
                     onPlayAudio = { id ->
                         Log.d("MainActivity", "onPlayAudio: id=$id, audioService=${audioService != null}")
-                        audioService?.playTranscriptionChunk(id)
+                        ensureAudioServiceReady { service ->
+                            service.playTranscriptionChunk(id)
+                        }
                     },
                     onStopAudio = {
                         Log.d("MainActivity", "onStopAudio")
@@ -276,7 +282,26 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
                     },
                     onRetryTranscription = { id ->
                         Log.d("MainActivity", "onRetryTranscription: id=$id, audioService=${audioService != null}")
-                        audioService?.retryTranscription(id)
+                        ensureAudioServiceReady { service ->
+                            val trip = activeTripViewModel.uiState.value
+                            val settings = settingsViewModel.uiState.value
+                            service.updateConfiguration(
+                                settings.operatingMode,
+                                settings.startCommand,
+                                settings.stopCommand,
+                                settings.sttEngine,
+                                settings.nativeSpeechLanguageTag,
+                                settings.whisperModelId,
+                                settings.vadStartDelaySeconds,
+                                settings.vadStopDelaySeconds,
+                                trip.isTripActive,
+                                trip.currentTripId,
+                                trip.hostUid,
+                                trip.tripPath,
+                                preferBluetoothAutomatically = settings.preferBluetoothAutomatically
+                            )
+                            service.retryTranscription(id)
+                        }
                     },
                     currentlyPlayingId = currentlyPlayingChunkId
                 )
@@ -368,7 +393,7 @@ class MainActivity : ComponentActivity(), AudioService.ServiceCallback {
 
     override fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean) {
         runOnUiThread {
-            activeTripViewModel.onAudioRouteChanged(routeLabel, isBluetoothActive)
+            activeTripViewModel.onAudioRouteChanged(routeLabel, isBluetoothActive, isBluetoothRequired)
         }
     }
 

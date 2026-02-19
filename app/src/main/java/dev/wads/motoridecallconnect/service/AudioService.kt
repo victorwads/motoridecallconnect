@@ -48,8 +48,11 @@ import dev.wads.motoridecallconnect.transport.WebRtcClient
 import dev.wads.motoridecallconnect.ui.activetrip.ConnectionStatus
 import dev.wads.motoridecallconnect.ui.activetrip.OperatingMode
 import dev.wads.motoridecallconnect.vad.SimpleVad
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import org.json.JSONObject
 import org.webrtc.AudioTrack as WebRtcAudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
@@ -70,6 +73,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     companion object {
         private const val TAG = "AudioService"
         private const val CONTROL_CHANNEL_LABEL = "trip-control"
+        private const val AUDIO_CHUNK_CHANNEL_LABEL = "trip-audio-chunks"
         private const val REMOTE_TRACK_GAIN = 2.0
         private const val TARGET_VOICE_CALL_VOLUME_RATIO = 0.95f
         private const val TARGET_MUSIC_VOLUME_RATIO = 0.80f
@@ -98,6 +102,31 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         private const val TRANSCRIPTION_TRIM_PREROLL_MS = 200L
         private const val TRANSCRIPTION_TRIM_POSTROLL_MS = 200L
         private const val TRANSCRIPTION_MIN_TRIMMED_MS = 700L
+
+        private const val CHUNK_SHARE_PART_SIZE_BYTES = 8_000
+        private const val CHUNK_SHARE_RETRY_TICK_MS = 2_500L
+        private const val CHUNK_SHARE_ACK_TIMEOUT_MS = 5_000L
+        private const val CHUNK_SHARE_MAX_BUFFERED_BYTES = 1_000_000L
+        private const val CHUNK_SHARE_INCOMING_TTL_MS = 120_000L
+
+        private const val CHUNK_MESSAGE_KEY_TYPE = "type"
+        private const val CHUNK_MESSAGE_KEY_CHUNK_ID = "chunkId"
+        private const val CHUNK_MESSAGE_KEY_TRIP_ID = "tripId"
+        private const val CHUNK_MESSAGE_KEY_HOST_UID = "hostUid"
+        private const val CHUNK_MESSAGE_KEY_TRIP_PATH = "tripPath"
+        private const val CHUNK_MESSAGE_KEY_SOURCE_UID = "sourceAuthorUid"
+        private const val CHUNK_MESSAGE_KEY_SOURCE_NAME = "sourceAuthorName"
+        private const val CHUNK_MESSAGE_KEY_CREATED_AT = "createdAtMs"
+        private const val CHUNK_MESSAGE_KEY_DURATION_MS = "durationMs"
+        private const val CHUNK_MESSAGE_KEY_TOTAL_PARTS = "totalParts"
+        private const val CHUNK_MESSAGE_KEY_TOTAL_SIZE = "totalSize"
+        private const val CHUNK_MESSAGE_KEY_INDEX = "index"
+        private const val CHUNK_MESSAGE_KEY_DATA = "data"
+
+        private const val CHUNK_MESSAGE_TYPE_META = "chunk-meta"
+        private const val CHUNK_MESSAGE_TYPE_PART = "chunk-part"
+        private const val CHUNK_MESSAGE_TYPE_END = "chunk-end"
+        private const val CHUNK_MESSAGE_TYPE_ACK = "chunk-ack"
     }
 
     private val binder = LocalBinder()
@@ -114,6 +143,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { }
     private val transcriptionExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val playbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val chunkShareExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var transcriptionQueue: TranscriptionChunkQueue
     @Volatile private var transcriptionCancelled = false
 
@@ -154,6 +184,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var whisperModelId = WhisperModelCatalog.defaultOption.id
     private var isRtcConnected = false
     private var controlDataChannel: DataChannel? = null
+    private var chunkDataChannel: DataChannel? = null
     private var pendingTripStatusSync = false
     private var isRemoteTransmitting = false
     private var activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
@@ -166,10 +197,37 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     private var savedCommunicationDevice: AudioDeviceInfo? = null
     private var bluetoothScoStartedByService = false
     private var isBluetoothAudioRouteActive = false
+    private var preferBluetoothAutomatically = true
+    private var lastPublishedBluetoothRequired = true
     private var currentAudioRouteLabel = AUDIO_ROUTE_LABEL_BT_UNAVAILABLE
     private var communicationDeviceChangedListener: AudioManager.OnCommunicationDeviceChangedListener? = null
     private val transcriptionWorkerLock = Any()
     private var isTranscriptionWorkerRunning = false
+    private val sharedChunkLock = Any()
+    private val outgoingSharedChunks = mutableMapOf<String, OutgoingSharedChunk>()
+    private val incomingSharedChunks = mutableMapOf<String, IncomingSharedChunk>()
+    private var chunkShareRetryJob: Job? = null
+
+    private data class OutgoingSharedChunk(
+        val queuedChunk: QueuedTranscriptionChunk,
+        var attempts: Int = 0,
+        var lastSentAtMs: Long = 0L
+    )
+
+    private data class IncomingSharedChunk(
+        val chunkId: String,
+        val tripId: String,
+        val hostUid: String?,
+        val tripPath: String?,
+        val sourceAuthorUid: String?,
+        val sourceAuthorName: String?,
+        val createdAtMs: Long,
+        val durationMs: Long,
+        val totalParts: Int,
+        val totalSize: Int,
+        val parts: MutableMap<Int, ByteArray> = mutableMapOf(),
+        var updatedAtMs: Long = System.currentTimeMillis()
+    )
 
     private data class AudioRouteState(
         val label: String,
@@ -221,7 +279,13 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             if (channel == null) {
                 return
             }
-            attachControlDataChannel(channel, source = "remote")
+            when (channel.label()) {
+                CONTROL_CHANNEL_LABEL -> attachControlDataChannel(channel, source = "remote")
+                AUDIO_CHUNK_CHANNEL_LABEL -> attachChunkDataChannel(channel, source = "remote")
+                else -> {
+                    Log.w(TAG, "Ignoring unknown data channel label=${channel.label()}")
+                }
+            }
         }
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             Log.d("AudioService", "IceConnectionChange: $state")
@@ -317,10 +381,17 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (!playbackExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
             playbackExecutor.shutdownNow()
         }
+        chunkShareExecutor.shutdown()
+        if (!chunkShareExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+            chunkShareExecutor.shutdownNow()
+        }
+        stopChunkShareRetryLoop()
         speechRecognizerHelper?.destroy()
         speechRecognizerHelper = null
         audioCapturer.shutdown()
         clearControlDataChannel()
+        clearChunkDataChannel()
+        clearSharedChunkState(reason = "service_destroy", clearOutgoing = true)
         webRtcClient.close()
         signalingClient.close()
         firestoreSignalingClient.close()
@@ -329,11 +400,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     fun registerCallback(callback: ServiceCallback) {
         this.callback = callback
         // Update immediately with current state
+        lastPublishedBluetoothRequired = isBluetoothRequiredForCallAudio()
         callback.onConnectionStatusChanged(connectionStatus, connectedPeer)
         callback.onTransmissionStateChanged(isTransmitting, isRemoteTransmitting)
         callback.onTripStatusChanged(isTripActive, currentTripId, currentTripHostUid, currentTripPath)
         callback.onTranscriptionQueueUpdated(transcriptionQueue.snapshot())
-        callback.onAudioRouteChanged(currentAudioRouteLabel, isBluetoothAudioRouteActive, isBluetoothRequired = true)
+        callback.onAudioRouteChanged(
+            currentAudioRouteLabel,
+            isBluetoothAudioRouteActive,
+            isBluetoothRequired = isBluetoothRequiredForCallAudio()
+        )
     }
 
     fun unregisterCallback(callback: ServiceCallback) {
@@ -456,6 +532,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         firestoreSignalingClient.clearSession(notify = false)
         activeSignalingTransport = ConnectionTransportMode.LOCAL_NETWORK
         clearControlDataChannel()
+        clearChunkDataChannel()
         webRtcClient.close()
         // Re-initialize for next potential connection
         webRtcClient = WebRtcClient(this, peerConnectionObserver)
@@ -469,6 +546,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         restoreCommunicationAudioProfile(reason = "disconnect")
         callback?.onConnectionStatusChanged(connectionStatus, null)
         notifyTransmissionStateChanged()
+        if (!isTripActive) {
+            stopChunkShareRetryLoop()
+            clearSharedChunkState(reason = "disconnect_no_active_trip", clearOutgoing = true)
+        }
     }
 
     fun setHostingEnabled(enabled: Boolean) {
@@ -502,11 +583,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         tripId: String? = null,
         tripHostUid: String? = null,
         tripPath: String? = null,
-        propagateTripStatus: Boolean = true
+        propagateTripStatus: Boolean = true,
+        preferBluetoothAutomatically: Boolean? = null
     ) {
         val previousTripId = currentTripId
         val previousTripHostUid = currentTripHostUid
         val previousTripPath = currentTripPath
+        val resolvedPreferBluetoothAutomatically =
+            preferBluetoothAutomatically ?: this.preferBluetoothAutomatically
         val resolvedModelId = WhisperModelCatalog.findById(modelId)?.id
             ?: WhisperModelCatalog.defaultOption.id
         val resolvedNativeLanguageTag = NativeSpeechLanguageCatalog.normalizeTag(nativeLanguageTag)
@@ -534,10 +618,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val engineChanged = this.sttEngine != sttEngine
         val nativeLanguageChanged = this.nativeSpeechLanguageTag != resolvedNativeLanguageTag
         val modelChanged = whisperModelId != resolvedModelId
+        val preferBluetoothChanged = this.preferBluetoothAutomatically != resolvedPreferBluetoothAutomatically
         val modeChanged = currentMode != mode
         currentMode = mode
         startCommand = startCmd
         stopCommand = stopCmd
+        this.preferBluetoothAutomatically = resolvedPreferBluetoothAutomatically
         if (vadStartDelaySeconds != null) {
             vadStartDelayMs = normalizeVadDelayMs(vadStartDelaySeconds)
         }
@@ -574,6 +660,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             speechRecognizerHelper?.setNativeLanguageTag(nativeSpeechLanguageTag)
         }
 
+        if (tripChanged) {
+            clearSharedChunkState(reason = "trip_changed", clearOutgoing = true)
+        }
+
         if (tripChanged && wasTripActive && !tripActive) {
             resetVadTimingState()
             setTransmitting(false, reason = "trip_end")
@@ -581,14 +671,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             stopAudioCaptureIfNeeded(reason = "trip_end")
             speechRecognizerHelper?.stopListening()
             flushTranscriptionBuffer(force = true, reason = "trip_end")
+            stopChunkShareRetryLoop()
         }
         if (tripChanged && tripActive) {
             resetTranscriptionState(clearAudio = true)
             updateCommunicationAudioProfile(reason = "trip_start")
-            if (isBluetoothAudioRouteActive) {
+            ensureChunkShareRetryLoopRunning()
+            if (isCurrentAudioRouteValidForLiveAudio()) {
                 startAudioCaptureIfNeeded()
             } else {
-                stopAudioCaptureIfNeeded(reason = "trip_start_bluetooth_missing")
+                stopAudioCaptureIfNeeded(reason = "trip_start_required_audio_route_missing")
             }
             lifecycleScope.launch {
                 val recognizer = getOrCreateSpeechRecognizerHelper()
@@ -604,9 +696,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 if (sttEngine == SttEngine.WHISPER) {
                     recognizer.downloadModelIfNeeded()
                 }
-                if (isTripActive && isBluetoothAudioRouteActive) {
+                if (isTripActive && isCurrentAudioRouteValidForLiveAudio()) {
                     recognizer.startListening()
                     scheduleTranscriptionQueueProcessing(reason = "trip_start")
+                    scheduleChunkSharing(reason = "trip_start")
                 }
             }
         } else if ((modelChanged || engineChanged) && tripActive) {
@@ -622,7 +715,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 if (sttEngine == SttEngine.WHISPER) {
                     recognizer.downloadModelIfNeeded()
                 }
-                if (isTripActive && isBluetoothAudioRouteActive) {
+                if (isTripActive && isCurrentAudioRouteValidForLiveAudio()) {
                     recognizer.startListening()
                     scheduleTranscriptionQueueProcessing(reason = "config_engine_or_model_changed")
                 }
@@ -658,15 +751,23 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (nativeLanguageChanged) {
             Log.i(TAG, "Native STT language changed locally. languageTag=$nativeSpeechLanguageTag")
         }
+        if (preferBluetoothChanged) {
+            Log.i(
+                TAG,
+                "Prefer Bluetooth automatically changed locally. enabled=$resolvedPreferBluetoothAutomatically"
+            )
+        }
         Log.d(
             TAG,
             "Configuration updated: Mode=$mode, Start=$startCmd, Stop=$stopCmd, " +
                 "VadStartDelayMs=$vadStartDelayMs, VadStopDelayMs=$vadStopDelayMs, " +
                 "SttEngine=$sttEngine, NativeLanguage=$nativeSpeechLanguageTag, " +
-                "WhisperModel=$whisperModelId, TripActive=$tripActive"
+                "WhisperModel=$whisperModelId, TripActive=$tripActive, " +
+                "PreferBluetoothAutomatically=$resolvedPreferBluetoothAutomatically"
         )
 
         if (!isTripActive) {
+            stopChunkShareRetryLoop()
             resetVadTimingState()
             setTransmitting(false, reason = "trip_inactive")
         } else {
@@ -711,6 +812,12 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             } else {
                 Log.w(TAG, "Failed to create local control data channel.")
             }
+            val localChunkChannel = webRtcClient.createDataChannel(AUDIO_CHUNK_CHANNEL_LABEL)
+            if (localChunkChannel != null) {
+                attachChunkDataChannel(localChunkChannel, source = "local")
+            } else {
+                Log.w(TAG, "Failed to create local chunk data channel.")
+            }
             webRtcClient.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription) {
                     webRtcClient.setLocalDescription(this, sdp)
@@ -731,6 +838,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         }
         if (isTripActive) {
             sendTripStatusToPeer()
+            ensureChunkShareRetryLoopRunning()
+            scheduleChunkSharing(reason = "peer_connected")
         }
         sendTransmissionStateToPeer()
         syncOutgoingAudioState(reason = "peer_connected")
@@ -898,7 +1007,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         val now = System.currentTimeMillis()
         val isSpeechDetected = vad.isSpeech(currentData)
 
-        if (isTripActive && !isBluetoothAudioRouteActive) {
+        if (isTripActive && !isCurrentAudioRouteValidForLiveAudio()) {
             resetVadTimingState()
             synchronized(transcriptionStateLock) {
                 if (audioBuffer.isNotEmpty()) {
@@ -1047,12 +1156,24 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         vadSilenceDetectedAtMs = null
     }
 
+    private fun isBluetoothRequiredForCallAudio(): Boolean {
+        return preferBluetoothAutomatically
+    }
+
+    private fun isCurrentAudioRouteValidForLiveAudio(): Boolean {
+        return !isBluetoothRequiredForCallAudio() || isBluetoothAudioRouteActive
+    }
+
     private fun setTransmitting(transmitting: Boolean, reason: String) {
-        if (transmitting && !isBluetoothAudioRouteActive) {
-            Log.w(TAG, "Blocking transmission because Bluetooth audio route is not active. reason=$reason")
-            forceStopTransmissionDueToInvalidRoute(reason = "tx_blocked_bluetooth_unavailable")
+        if (transmitting && !isCurrentAudioRouteValidForLiveAudio()) {
+            Log.w(
+                TAG,
+                "Blocking transmission because the required audio route is unavailable. " +
+                    "reason=$reason, bluetoothRequired=${isBluetoothRequiredForCallAudio()}"
+            )
+            forceStopTransmissionDueToInvalidRoute(reason = "tx_blocked_required_audio_route_unavailable")
             notifyAudioRouteChanged()
-            syncOutgoingAudioState(reason = "tx_blocked_no_bluetooth")
+            syncOutgoingAudioState(reason = "tx_blocked_required_audio_route")
             return
         }
 
@@ -1075,7 +1196,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun shouldEnableOutgoingAudio(): Boolean {
-        return isTripActive && isTransmitting && isRtcConnected && isBluetoothAudioRouteActive
+        return isTripActive && isTransmitting && isRtcConnected && isCurrentAudioRouteValidForLiveAudio()
     }
 
     private fun syncOutgoingAudioState(reason: String) {
@@ -1086,7 +1207,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             TAG,
             "Sync outgoing audio. enabled=$enabled, reason=$reason, tripActive=$isTripActive, " +
                 "transmitting=$isTransmitting, connectionStatus=$connectionStatus, " +
-                "bluetoothRouteActive=$isBluetoothAudioRouteActive"
+                "bluetoothRouteActive=$isBluetoothAudioRouteActive, " +
+                "bluetoothRequired=${isBluetoothRequiredForCallAudio()}"
         )
     }
 
@@ -1185,18 +1307,19 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         boostStreamVolume(AudioManager.STREAM_VOICE_CALL, TARGET_VOICE_CALL_VOLUME_RATIO)
         boostStreamVolume(AudioManager.STREAM_MUSIC, TARGET_MUSIC_VOLUME_RATIO)
 
-        enforceBluetoothAudioRoute()
+        enforcePreferredCommunicationAudioRoute()
         refreshAudioRouteState(reason = "profile_applied:$reason")
         updateTripAudioCaptureForRoute()
 
-        if (!isBluetoothAudioRouteActive) {
-            forceStopTransmissionDueToInvalidRoute(reason = "bluetooth_route_unavailable:$reason")
+        if (!isCurrentAudioRouteValidForLiveAudio()) {
+            forceStopTransmissionDueToInvalidRoute(reason = "required_audio_route_unavailable:$reason")
             webRtcClient.setLocalAudioEnabled(false)
         }
         Log.d(
             TAG,
             "Communication audio profile applied. reason=$reason, route=$currentAudioRouteLabel, " +
-                "bluetoothRouteActive=$isBluetoothAudioRouteActive"
+                "bluetoothRouteActive=$isBluetoothAudioRouteActive, " +
+                "bluetoothRequired=${isBluetoothRequiredForCallAudio()}"
         )
     }
 
@@ -1237,6 +1360,32 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     @Suppress("DEPRECATION")
+    private fun enforcePreferredCommunicationAudioRoute() {
+        if (isBluetoothRequiredForCallAudio()) {
+            enforceBluetoothAudioRoute()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val nonBluetoothDevice = findPreferredNonBluetoothCommunicationDevice()
+            if (nonBluetoothDevice != null) {
+                audioManager.setCommunicationDevice(nonBluetoothDevice)
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+            return
+        }
+
+        if (audioManager.isBluetoothScoOn) {
+            audioManager.isBluetoothScoOn = false
+        }
+        if (bluetoothScoStartedByService) {
+            audioManager.stopBluetoothSco()
+            bluetoothScoStartedByService = false
+        }
+    }
+
+    @Suppress("DEPRECATION")
     private fun enforceBluetoothAudioRoute() {
         if (!hasBluetoothConnectPermission()) {
             return
@@ -1271,7 +1420,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
     private fun refreshAudioRouteState(reason: String) {
         val state = evaluateCurrentAudioRouteState()
-        val changed = state.label != currentAudioRouteLabel || state.isBluetoothActive != isBluetoothAudioRouteActive
+        val bluetoothRequired = isBluetoothRequiredForCallAudio()
+        val changed = state.label != currentAudioRouteLabel ||
+            state.isBluetoothActive != isBluetoothAudioRouteActive ||
+            bluetoothRequired != lastPublishedBluetoothRequired
         currentAudioRouteLabel = state.label
         isBluetoothAudioRouteActive = state.isBluetoothActive
 
@@ -1286,15 +1438,18 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
     }
 
     private fun notifyAudioRouteChanged() {
+        val bluetoothRequired = isBluetoothRequiredForCallAudio()
+        lastPublishedBluetoothRequired = bluetoothRequired
         callback?.onAudioRouteChanged(
             routeLabel = currentAudioRouteLabel,
             isBluetoothActive = isBluetoothAudioRouteActive,
-            isBluetoothRequired = true
+            isBluetoothRequired = bluetoothRequired
         )
     }
 
     private fun evaluateCurrentAudioRouteState(): AudioRouteState {
-        if (!hasBluetoothConnectPermission()) {
+        val bluetoothRequired = isBluetoothRequiredForCallAudio()
+        if (bluetoothRequired && !hasBluetoothConnectPermission()) {
             return AudioRouteState(AUDIO_ROUTE_LABEL_BT_PERMISSION_MISSING, isBluetoothActive = false)
         }
 
@@ -1306,7 +1461,15 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 }
                 return AudioRouteState(mapNonBluetoothRouteLabel(currentDevice), isBluetoothActive = false)
             }
-            val bluetoothAvailable = audioManager.availableCommunicationDevices.any { isBluetoothCommunicationDevice(it) }
+            if (!bluetoothRequired) {
+                val fallbackDevice = findPreferredNonBluetoothCommunicationDevice()
+                return if (fallbackDevice != null) {
+                    AudioRouteState(mapNonBluetoothRouteLabel(fallbackDevice), isBluetoothActive = false)
+                } else {
+                    AudioRouteState(AUDIO_ROUTE_LABEL_PHONE, isBluetoothActive = false)
+                }
+            }
+            val bluetoothAvailable = availableCommunicationDevicesSafely().any { isBluetoothCommunicationDevice(it) }
             return if (bluetoothAvailable) {
                 AudioRouteState(AUDIO_ROUTE_LABEL_BT_PENDING, isBluetoothActive = false)
             } else {
@@ -1319,10 +1482,25 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (audioManager.isBluetoothScoOn && bluetoothAvailable) {
             return AudioRouteState(AUDIO_ROUTE_LABEL_BT_ACTIVE, isBluetoothActive = true)
         }
-        return if (bluetoothAvailable) {
-            AudioRouteState(AUDIO_ROUTE_LABEL_BT_PENDING, isBluetoothActive = false)
+        if (bluetoothRequired) {
+            return if (bluetoothAvailable) {
+                AudioRouteState(AUDIO_ROUTE_LABEL_BT_PENDING, isBluetoothActive = false)
+            } else {
+                AudioRouteState(AUDIO_ROUTE_LABEL_BT_UNAVAILABLE, isBluetoothActive = false)
+            }
+        }
+
+        val hasWiredDevice = audioManager.getDevices(AudioManager.GET_DEVICES_ALL).any { device ->
+            device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+        }
+        if (hasWiredDevice) {
+            return AudioRouteState(AUDIO_ROUTE_LABEL_WIRED, isBluetoothActive = false)
+        }
+        return if (audioManager.isSpeakerphoneOn) {
+            AudioRouteState(AUDIO_ROUTE_LABEL_SPEAKER, isBluetoothActive = false)
         } else {
-            AudioRouteState(AUDIO_ROUTE_LABEL_BT_UNAVAILABLE, isBluetoothActive = false)
+            AudioRouteState(AUDIO_ROUTE_LABEL_EARPIECE, isBluetoothActive = false)
         }
     }
 
@@ -1331,8 +1509,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             return
         }
 
-        if (!isBluetoothAudioRouteActive) {
-            stopAudioCaptureIfNeeded(reason = "bluetooth_route_inactive")
+        if (!isCurrentAudioRouteValidForLiveAudio()) {
+            stopAudioCaptureIfNeeded(reason = "required_audio_route_inactive")
             speechRecognizerHelper?.stopListening()
             return
         }
@@ -1343,7 +1521,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             return
         }
         lifecycleScope.launch {
-            if (isTripActive && isBluetoothAudioRouteActive) {
+            if (isTripActive && isCurrentAudioRouteValidForLiveAudio()) {
                 getOrCreateSpeechRecognizerHelper().startListening()
                 scheduleTranscriptionQueueProcessing(reason = "audio_route_recovered")
             }
@@ -1368,12 +1546,43 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     }
 
+    private fun availableCommunicationDevicesSafely(): List<AudioDeviceInfo> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return emptyList()
+        }
+        return runCatching { audioManager.availableCommunicationDevices }
+            .getOrElse { error ->
+                Log.w(TAG, "Failed to read available communication devices.", error)
+                emptyList()
+            }
+    }
+
     private fun findPreferredBluetoothCommunicationDevice(): AudioDeviceInfo? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return null
         }
-        return audioManager.availableCommunicationDevices
+        return availableCommunicationDevicesSafely()
             .firstOrNull { isBluetoothCommunicationDevice(it) }
+    }
+
+    private fun findPreferredNonBluetoothCommunicationDevice(): AudioDeviceInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return null
+        }
+        val available = availableCommunicationDevicesSafely()
+            .filterNot { isBluetoothCommunicationDevice(it) }
+        return available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+            ?: available.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+            }
+            ?: available.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+            }
+            ?: available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            ?: available.firstOrNull()
     }
 
     private fun isBluetoothCommunicationDevice(device: AudioDeviceInfo): Boolean {
@@ -1532,11 +1741,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         val queueDurationMs = bytesToDurationMs(dataToQueue.size)
         val chunkCreatedAtMs = System.currentTimeMillis()
+        val currentUser = FirebaseAuth.getInstance().currentUser
         val queuedChunk = transcriptionQueue.enqueue(
             chunk = dataToQueue,
             tripId = tripId,
             hostUid = tripHostUidSnapshot,
             tripPath = tripPathSnapshot,
+            sourceAuthorUid = currentUser?.uid,
+            sourceAuthorName = currentUser?.displayName,
             createdAtMs = chunkCreatedAtMs,
             durationMs = queueDurationMs
         )
@@ -1561,6 +1773,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             text = "",
             errorMessage = null
         )
+        queueChunkForPeerSharing(queuedChunk, dataToQueue)
         publishTranscriptionQueueSnapshot(reason = "chunk_enqueued")
         scheduleTranscriptionQueueProcessing(reason = "chunk_enqueued")
     }
@@ -1699,6 +1912,16 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         Log.d(TAG, "retryTranscription: found chunk id=${chunk.id}, status=${chunk.status}, attempts=${chunk.attempts}, audioPath=${chunk.audioFilePath}")
 
         transcriptionQueue.markRetry(queueId)
+        val queuedChunk = transcriptionQueue.snapshot().items.find { it.id == queueId }
+        if (queuedChunk != null) {
+            persistTranscriptChunkToFirebase(
+                chunk = queuedChunk,
+                status = TranscriptStatus.QUEUED,
+                text = "",
+                errorMessage = null
+            )
+        }
+        publishTranscriptionQueueSnapshot(reason = "retry_requested")
         Log.d(TAG, "retryTranscription: marked as retry, scheduling queue processing")
         scheduleTranscriptionQueueProcessing("retry_requested")
     }
@@ -1801,9 +2024,14 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
         try {
             val recognizer = getOrCreateSpeechRecognizerHelper()
-            recognizer.startListening()
+            // Queue processing must stay independent from live microphone/listening sessions.
             while (!transcriptionCancelled) {
                 val queuedChunk = transcriptionQueue.pollNextPending() ?: break
+                Log.i(
+                    TAG,
+                    "[STT_QUEUE] Chunk picked for processing. queueId=${queuedChunk.id}, " +
+                        "tripId=${queuedChunk.tripId}, attempt=${queuedChunk.attempts}, durationMs=${queuedChunk.durationMs}, engine=$sttEngine"
+                )
                 // Update Firebase status from QUEUED to PROCESSING
                 persistTranscriptChunkToFirebase(
                     chunk = queuedChunk,
@@ -1824,10 +2052,19 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         errorMessage = failureReason
                     )
                     publishTranscriptionQueueSnapshot(reason = "chunk_processing_missing_audio")
+                    Log.e(
+                        TAG,
+                        "[STT_QUEUE] Missing chunk audio file. queueId=${queuedChunk.id}, path=${queuedChunk.audioFilePath}"
+                    )
                     continue
                 }
+                Log.d(
+                    TAG,
+                    "[STT_QUEUE] Audio bytes loaded. queueId=${queuedChunk.id}, bytes=${audioBytes.size}, durationMs=${queuedChunk.durationMs}"
+                )
 
                 val startMs = System.currentTimeMillis()
+                Log.d(TAG, "[STT_QUEUE] Transcription started. queueId=${queuedChunk.id}, engine=$sttEngine")
                 val result = runCatching { recognizer.transcribeChunk(audioBytes) }
                     .getOrElse { throwable ->
                         SpeechRecognizerHelper.ChunkTranscriptionResult(
@@ -1835,6 +2072,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         )
                     }
                 val elapsedMs = System.currentTimeMillis() - startMs
+                Log.d(
+                    TAG,
+                    "[STT_QUEUE] Transcription finished. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, hasError=${!result.error.isNullOrBlank()}"
+                )
 
                 // If cancelled during transcription, put it back and stop
                 if (transcriptionCancelled) {
@@ -1863,7 +2104,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         publishTranscriptionQueueSnapshot(reason = "chunk_processing_error")
                         Log.e(
                             TAG,
-                            "Queued STT chunk failed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, error=${result.error}"
+                            "[STT_QUEUE] Queued STT chunk failed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, error=${result.error}"
                         )
                     }
                     finalText.isBlank() -> {
@@ -1878,7 +2119,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         publishTranscriptionQueueSnapshot(reason = "chunk_processing_empty_result")
                         Log.w(
                             TAG,
-                            "Queued STT chunk produced empty result. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs"
+                            "[STT_QUEUE] Queued STT chunk produced empty result. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs"
                         )
                     }
                     else -> {
@@ -1903,7 +2144,7 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                         }
                         Log.i(
                             TAG,
-                            "Queued STT chunk transcribed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, " +
+                            "[STT_QUEUE] Queued STT chunk transcribed. queueId=${queuedChunk.id}, elapsedMs=$elapsedMs, " +
                                 "textLen=${finalText.length}"
                         )
                     }
@@ -1936,6 +2177,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 Log.w(TAG, "Unable to persist transcript chunk: destination uid missing. chunkId=${chunk.id}")
                 return@launch
             }
+            val authorId = chunk.sourceAuthorUid ?: currentUser.uid
+            val authorName = chunk.sourceAuthorName ?: currentUser.displayName ?: "Unknown"
 
             val resolvedText = when {
                 text.isNotBlank() -> text
@@ -1947,8 +2190,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
             val payload: MutableMap<String, Any?> = mutableMapOf(
                 "tripId" to chunk.tripId,
-                "authorId" to currentUser.uid,
-                "authorName" to (currentUser.displayName ?: "Unknown"),
+                "authorId" to authorId,
+                "authorName" to authorName,
                 "text" to resolvedText,
                 "timestamp" to chunk.createdAtMs,
                 "isPartial" to (status == TranscriptStatus.PROCESSING || status == TranscriptStatus.QUEUED),
@@ -2082,6 +2325,394 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
             Log.w(TAG, "Failed to send control message via data channel: $message")
         }
         return sent
+    }
+
+    private fun ensureChunkShareRetryLoopRunning() {
+        if (chunkShareRetryJob?.isActive == true) {
+            return
+        }
+        chunkShareRetryJob = lifecycleScope.launch {
+            while (isTripActive) {
+                scheduleChunkSharing(reason = "retry_tick")
+                delay(CHUNK_SHARE_RETRY_TICK_MS)
+            }
+        }
+    }
+
+    private fun stopChunkShareRetryLoop() {
+        chunkShareRetryJob?.cancel()
+        chunkShareRetryJob = null
+    }
+
+    private fun scheduleChunkSharing(reason: String) {
+        chunkShareExecutor.execute {
+            processChunkSharing(reason)
+        }
+    }
+
+    private fun processChunkSharing(reason: String) {
+        val channel = chunkDataChannel ?: return
+        if (channel.state() != DataChannel.State.OPEN) {
+            return
+        }
+        if (!isTripActive) {
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        val pending = synchronized(sharedChunkLock) {
+            pruneStaleIncomingChunksLocked(nowMs)
+            outgoingSharedChunks.values
+                .filter { it.lastSentAtMs == 0L || nowMs - it.lastSentAtMs >= CHUNK_SHARE_ACK_TIMEOUT_MS }
+                .sortedBy { it.queuedChunk.createdAtMs }
+        }
+        if (pending.isEmpty()) {
+            return
+        }
+        for (entry in pending) {
+            val sent = sendSharedChunkPayload(channel, entry)
+            if (!sent) {
+                Log.d(TAG, "Chunk sharing paused due to channel backpressure. reason=$reason")
+                break
+            }
+            synchronized(sharedChunkLock) {
+                outgoingSharedChunks[entry.queuedChunk.id]?.let { tracked ->
+                    tracked.attempts += 1
+                    tracked.lastSentAtMs = nowMs
+                }
+            }
+        }
+    }
+
+    private fun queueChunkForPeerSharing(queuedChunk: QueuedTranscriptionChunk, audioBytes: ByteArray) {
+        if (!isTripActive) {
+            return
+        }
+        if (queuedChunk.id.isBlank() || audioBytes.isEmpty()) {
+            return
+        }
+        val inserted = synchronized(sharedChunkLock) {
+            if (outgoingSharedChunks.containsKey(queuedChunk.id)) {
+                false
+            } else {
+                outgoingSharedChunks[queuedChunk.id] = OutgoingSharedChunk(
+                    queuedChunk = queuedChunk
+                )
+                true
+            }
+        }
+        if (!inserted) {
+            return
+        }
+        ensureChunkShareRetryLoopRunning()
+        scheduleChunkSharing(reason = "local_chunk_enqueued")
+    }
+
+    private fun sendSharedChunkPayload(channel: DataChannel, chunk: OutgoingSharedChunk): Boolean {
+        val audioBytes = transcriptionQueue.readAudioBytes(chunk.queuedChunk)
+        if (audioBytes == null || audioBytes.isEmpty()) {
+            synchronized(sharedChunkLock) {
+                outgoingSharedChunks.remove(chunk.queuedChunk.id)
+            }
+            Log.w(TAG, "Dropping shared chunk send because local audio file is missing. chunkId=${chunk.queuedChunk.id}")
+            return true
+        }
+        val totalParts =
+            ((audioBytes.size + CHUNK_SHARE_PART_SIZE_BYTES - 1) / CHUNK_SHARE_PART_SIZE_BYTES).coerceAtLeast(1)
+        val metaMessage = JSONObject().apply {
+            put(CHUNK_MESSAGE_KEY_TYPE, CHUNK_MESSAGE_TYPE_META)
+            put(CHUNK_MESSAGE_KEY_CHUNK_ID, chunk.queuedChunk.id)
+            put(CHUNK_MESSAGE_KEY_TRIP_ID, chunk.queuedChunk.tripId)
+            put(CHUNK_MESSAGE_KEY_HOST_UID, chunk.queuedChunk.hostUid)
+            put(
+                CHUNK_MESSAGE_KEY_TRIP_PATH,
+                chunk.queuedChunk.tripPath ?: buildTripPath(chunk.queuedChunk.hostUid, chunk.queuedChunk.tripId)
+            )
+            put(CHUNK_MESSAGE_KEY_SOURCE_UID, chunk.queuedChunk.sourceAuthorUid)
+            put(CHUNK_MESSAGE_KEY_SOURCE_NAME, chunk.queuedChunk.sourceAuthorName)
+            put(CHUNK_MESSAGE_KEY_CREATED_AT, chunk.queuedChunk.createdAtMs)
+            put(CHUNK_MESSAGE_KEY_DURATION_MS, chunk.queuedChunk.durationMs)
+            put(CHUNK_MESSAGE_KEY_TOTAL_PARTS, totalParts)
+            put(CHUNK_MESSAGE_KEY_TOTAL_SIZE, audioBytes.size)
+        }.toString()
+        if (!sendChunkChannelMessage(channel, metaMessage)) {
+            return false
+        }
+
+        for (index in 0 until totalParts) {
+            val start = index * CHUNK_SHARE_PART_SIZE_BYTES
+            val end = (start + CHUNK_SHARE_PART_SIZE_BYTES).coerceAtMost(audioBytes.size)
+            val part = audioBytes.copyOfRange(start, end)
+            val encoded = Base64.encodeToString(part, Base64.NO_WRAP)
+            val partMessage = JSONObject().apply {
+                put(CHUNK_MESSAGE_KEY_TYPE, CHUNK_MESSAGE_TYPE_PART)
+                put(CHUNK_MESSAGE_KEY_CHUNK_ID, chunk.queuedChunk.id)
+                put(CHUNK_MESSAGE_KEY_INDEX, index)
+                put(CHUNK_MESSAGE_KEY_TOTAL_PARTS, totalParts)
+                put(CHUNK_MESSAGE_KEY_DATA, encoded)
+            }.toString()
+            if (!sendChunkChannelMessage(channel, partMessage)) {
+                return false
+            }
+        }
+
+        val endMessage = JSONObject().apply {
+            put(CHUNK_MESSAGE_KEY_TYPE, CHUNK_MESSAGE_TYPE_END)
+            put(CHUNK_MESSAGE_KEY_CHUNK_ID, chunk.queuedChunk.id)
+            put(CHUNK_MESSAGE_KEY_TOTAL_PARTS, totalParts)
+            put(CHUNK_MESSAGE_KEY_TOTAL_SIZE, audioBytes.size)
+        }.toString()
+        return sendChunkChannelMessage(channel, endMessage)
+    }
+
+    private fun sendChunkChannelMessage(channel: DataChannel, payload: String): Boolean {
+        if (channel.state() != DataChannel.State.OPEN) {
+            return false
+        }
+        if (channel.bufferedAmount() > CHUNK_SHARE_MAX_BUFFERED_BYTES) {
+            return false
+        }
+        val bytes = payload.toByteArray(Charsets.UTF_8)
+        val sent = channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
+        if (!sent) {
+            Log.w(TAG, "Failed to send chunk data channel payload.")
+        }
+        return sent
+    }
+
+    private fun attachChunkDataChannel(channel: DataChannel, source: String) {
+        if (chunkDataChannel === channel) {
+            return
+        }
+        clearChunkDataChannel()
+        chunkDataChannel = channel
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) {
+                if (channel.state() == DataChannel.State.OPEN) {
+                    scheduleChunkSharing(reason = "buffered_amount_change")
+                }
+            }
+
+            override fun onStateChange() {
+                val state = channel.state()
+                Log.i(TAG, "Chunk data channel state=$state source=$source")
+                if (state == DataChannel.State.OPEN) {
+                    ensureChunkShareRetryLoopRunning()
+                    scheduleChunkSharing(reason = "chunk_channel_open")
+                }
+            }
+
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                if (buffer.binary) {
+                    return
+                }
+                val messageBytes = ByteArray(buffer.data.remaining())
+                buffer.data.get(messageBytes)
+                val message = String(messageBytes, Charsets.UTF_8).trim()
+                if (message.isBlank()) {
+                    return
+                }
+                handleChunkChannelMessage(message)
+            }
+        })
+    }
+
+    private fun clearChunkDataChannel() {
+        val channel = chunkDataChannel ?: return
+        try {
+            channel.unregisterObserver()
+        } catch (_: Throwable) {
+        }
+        try {
+            channel.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            channel.dispose()
+        } catch (_: Throwable) {
+        }
+        chunkDataChannel = null
+    }
+
+    private fun handleChunkChannelMessage(message: String) {
+        val payload = runCatching { JSONObject(message) }.getOrNull() ?: return
+        when (payload.optString(CHUNK_MESSAGE_KEY_TYPE)) {
+            CHUNK_MESSAGE_TYPE_META -> handleSharedChunkMeta(payload)
+            CHUNK_MESSAGE_TYPE_PART -> handleSharedChunkPart(payload)
+            CHUNK_MESSAGE_TYPE_END -> handleSharedChunkEnd(payload)
+            CHUNK_MESSAGE_TYPE_ACK -> handleSharedChunkAck(payload)
+            else -> Unit
+        }
+    }
+
+    private fun handleSharedChunkMeta(payload: JSONObject) {
+        val chunkId = payload.optString(CHUNK_MESSAGE_KEY_CHUNK_ID).takeIf { it.isNotBlank() } ?: return
+        val tripId = payload.optString(CHUNK_MESSAGE_KEY_TRIP_ID).takeIf { it.isNotBlank() } ?: return
+        if (transcriptionQueue.findById(chunkId) != null) {
+            sendSharedChunkAck(chunkId)
+            return
+        }
+
+        val totalParts = payload.optInt(CHUNK_MESSAGE_KEY_TOTAL_PARTS, 0)
+        val totalSize = payload.optInt(CHUNK_MESSAGE_KEY_TOTAL_SIZE, 0)
+        if (totalParts <= 0 || totalSize <= 0) {
+            return
+        }
+
+        val hostUid = payload.optString(CHUNK_MESSAGE_KEY_HOST_UID).takeIf { it.isNotBlank() }
+        val tripPath = payload.optString(CHUNK_MESSAGE_KEY_TRIP_PATH).takeIf { it.isNotBlank() }
+            ?: buildTripPath(hostUid, tripId)
+        val incoming = IncomingSharedChunk(
+            chunkId = chunkId,
+            tripId = tripId,
+            hostUid = hostUid,
+            tripPath = tripPath,
+            sourceAuthorUid = payload.optString(CHUNK_MESSAGE_KEY_SOURCE_UID).takeIf { it.isNotBlank() },
+            sourceAuthorName = payload.optString(CHUNK_MESSAGE_KEY_SOURCE_NAME).takeIf { it.isNotBlank() },
+            createdAtMs = payload.optLong(CHUNK_MESSAGE_KEY_CREATED_AT, System.currentTimeMillis()),
+            durationMs = payload.optLong(CHUNK_MESSAGE_KEY_DURATION_MS, 0L),
+            totalParts = totalParts,
+            totalSize = totalSize
+        )
+        synchronized(sharedChunkLock) {
+            pruneStaleIncomingChunksLocked(System.currentTimeMillis())
+            val existing = incomingSharedChunks[chunkId]
+            if (existing == null || existing.totalParts != totalParts || existing.totalSize != totalSize) {
+                incomingSharedChunks[chunkId] = incoming
+            } else {
+                existing.updatedAtMs = System.currentTimeMillis()
+            }
+        }
+    }
+
+    private fun handleSharedChunkPart(payload: JSONObject) {
+        val chunkId = payload.optString(CHUNK_MESSAGE_KEY_CHUNK_ID).takeIf { it.isNotBlank() } ?: return
+        val partIndex = payload.optInt(CHUNK_MESSAGE_KEY_INDEX, -1)
+        val encodedPart = payload.optString(CHUNK_MESSAGE_KEY_DATA).takeIf { it.isNotBlank() } ?: return
+        val decodedPart = runCatching { Base64.decode(encodedPart, Base64.NO_WRAP) }.getOrNull() ?: return
+
+        synchronized(sharedChunkLock) {
+            val incoming = incomingSharedChunks[chunkId] ?: return
+            if (partIndex < 0 || partIndex >= incoming.totalParts) {
+                return
+            }
+            if (!incoming.parts.containsKey(partIndex)) {
+                incoming.parts[partIndex] = decodedPart
+            }
+            incoming.updatedAtMs = System.currentTimeMillis()
+        }
+    }
+
+    private fun handleSharedChunkEnd(payload: JSONObject) {
+        val chunkId = payload.optString(CHUNK_MESSAGE_KEY_CHUNK_ID).takeIf { it.isNotBlank() } ?: return
+        val expectedParts = payload.optInt(CHUNK_MESSAGE_KEY_TOTAL_PARTS, -1)
+        val expectedSize = payload.optInt(CHUNK_MESSAGE_KEY_TOTAL_SIZE, -1)
+        val incoming = synchronized(sharedChunkLock) {
+            val tracked = incomingSharedChunks[chunkId] ?: return
+            if (expectedParts > 0 && tracked.totalParts != expectedParts) {
+                return
+            }
+            if (expectedSize > 0 && tracked.totalSize != expectedSize) {
+                return
+            }
+            if (tracked.parts.size < tracked.totalParts) {
+                tracked.updatedAtMs = System.currentTimeMillis()
+                return
+            }
+            incomingSharedChunks.remove(chunkId)
+            tracked
+        }
+
+        val assembled = assembleSharedChunkBytes(incoming) ?: return
+        val stored = storeIncomingSharedChunk(incoming, assembled)
+        if (stored) {
+            sendSharedChunkAck(chunkId)
+        }
+    }
+
+    private fun handleSharedChunkAck(payload: JSONObject) {
+        val chunkId = payload.optString(CHUNK_MESSAGE_KEY_CHUNK_ID).takeIf { it.isNotBlank() } ?: return
+        val removed = synchronized(sharedChunkLock) {
+            outgoingSharedChunks.remove(chunkId) != null
+        }
+        if (removed) {
+            Log.d(TAG, "Shared chunk ack received. chunkId=$chunkId")
+        }
+    }
+
+    private fun sendSharedChunkAck(chunkId: String) {
+        val channel = chunkDataChannel ?: return
+        if (channel.state() != DataChannel.State.OPEN) {
+            return
+        }
+        val ackPayload = JSONObject().apply {
+            put(CHUNK_MESSAGE_KEY_TYPE, CHUNK_MESSAGE_TYPE_ACK)
+            put(CHUNK_MESSAGE_KEY_CHUNK_ID, chunkId)
+        }.toString()
+        sendChunkChannelMessage(channel, ackPayload)
+    }
+
+    private fun assembleSharedChunkBytes(incoming: IncomingSharedChunk): ByteArray? {
+        val combined = ByteArray(incoming.totalSize)
+        var offset = 0
+        for (index in 0 until incoming.totalParts) {
+            val part = incoming.parts[index] ?: return null
+            if (offset + part.size > incoming.totalSize) {
+                return null
+            }
+            System.arraycopy(part, 0, combined, offset, part.size)
+            offset += part.size
+        }
+        if (offset != incoming.totalSize) {
+            return null
+        }
+        return combined
+    }
+
+    private fun storeIncomingSharedChunk(incoming: IncomingSharedChunk, audioBytes: ByteArray): Boolean {
+        if (transcriptionQueue.findById(incoming.chunkId) != null) {
+            return true
+        }
+        val queuedChunk = transcriptionQueue.enqueue(
+            chunk = audioBytes,
+            tripId = incoming.tripId,
+            hostUid = incoming.hostUid,
+            tripPath = incoming.tripPath,
+            chunkId = incoming.chunkId,
+            sourceAuthorUid = incoming.sourceAuthorUid,
+            sourceAuthorName = incoming.sourceAuthorName,
+            createdAtMs = incoming.createdAtMs,
+            durationMs = incoming.durationMs.takeIf { it > 0L } ?: bytesToDurationMs(audioBytes.size)
+        ) ?: return false
+
+        persistTranscriptChunkToFirebase(
+            chunk = queuedChunk,
+            status = TranscriptStatus.QUEUED,
+            text = "",
+            errorMessage = null
+        )
+        publishTranscriptionQueueSnapshot(reason = "shared_chunk_received")
+        scheduleTranscriptionQueueProcessing(reason = "shared_chunk_received")
+        Log.i(
+            TAG,
+            "Stored shared chunk from peer. chunkId=${incoming.chunkId}, tripId=${incoming.tripId}, bytes=${audioBytes.size}"
+        )
+        return true
+    }
+
+    private fun clearSharedChunkState(reason: String, clearOutgoing: Boolean) {
+        synchronized(sharedChunkLock) {
+            if (clearOutgoing) {
+                outgoingSharedChunks.clear()
+            }
+            incomingSharedChunks.clear()
+        }
+        Log.d(TAG, "Cleared shared chunk state. reason=$reason, clearOutgoing=$clearOutgoing")
+    }
+
+    private fun pruneStaleIncomingChunksLocked(nowMs: Long) {
+        incomingSharedChunks.entries.removeAll { (_, value) ->
+            nowMs - value.updatedAtMs > CHUNK_SHARE_INCOMING_TTL_MS
+        }
     }
 
     private fun attachControlDataChannel(channel: DataChannel, source: String) {

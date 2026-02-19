@@ -77,6 +77,7 @@ fun SettingsScreen(
     whisperModelId: String,
     vadStartDelaySeconds: Float,
     vadStopDelaySeconds: Float,
+    preferBluetoothAutomatically: Boolean,
     autoConnectNearbyFriends: Boolean,
     presenceUpdateIntervalSeconds: Int,
     onModeChange: (OperatingMode) -> Unit,
@@ -88,6 +89,7 @@ fun SettingsScreen(
     onWhisperModelChange: (String) -> Unit,
     onVadStartDelayChange: (Float) -> Unit,
     onVadStopDelayChange: (Float) -> Unit,
+    onPreferBluetoothAutoChange: (Boolean) -> Unit,
     onAutoConnectNearbyFriendsChange: (Boolean) -> Unit,
     onPresenceUpdateIntervalChange: (Int) -> Unit,
     onNavigateBack: () -> Unit,
@@ -107,8 +109,6 @@ fun SettingsScreen(
     var presenceIntervalExpanded by remember { mutableStateOf(false) }
     val presenceIntervalOptions = remember { listOf(15, 30, 60, 120) }
     
-    // Mock State - In a real app, this would come from a ViewModel/DataStore
-    var preferBluetooth by remember { mutableStateOf(true) }
     var duckingIntensity by remember { mutableFloatStateOf(80f) }
 
     Column(
@@ -485,7 +485,10 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f)
                     )
-                    Switch(checked = preferBluetooth, onCheckedChange = { preferBluetooth = it })
+                    Switch(
+                        checked = preferBluetoothAutomatically,
+                        onCheckedChange = onPreferBluetoothAutoChange
+                    )
                 }
 
                 Row(
@@ -582,6 +585,7 @@ private fun SettingsScreenPreview() {
                 whisperModelId = WhisperModelCatalog.defaultOption.id,
                 vadStartDelaySeconds = 0f,
                 vadStopDelaySeconds = 1.5f,
+                preferBluetoothAutomatically = true,
                 autoConnectNearbyFriends = false,
                 presenceUpdateIntervalSeconds = 30,
                 onModeChange = {},
@@ -593,6 +597,7 @@ private fun SettingsScreenPreview() {
                 onWhisperModelChange = {},
                 onVadStartDelayChange = {},
                 onVadStopDelayChange = {},
+                onPreferBluetoothAutoChange = {},
                 onAutoConnectNearbyFriendsChange = {},
                 onPresenceUpdateIntervalChange = {},
                 onTestAudio = {},

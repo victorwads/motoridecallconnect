@@ -19,6 +19,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         private const val KEY_TRIP_ID = "tripId"
         private const val KEY_HOST_UID = "hostUid"
         private const val KEY_TRIP_PATH = "tripPath"
+        private const val KEY_SOURCE_AUTHOR_UID = "sourceAuthorUid"
+        private const val KEY_SOURCE_AUTHOR_NAME = "sourceAuthorName"
         private const val KEY_CREATED_AT = "createdAtMs"
         private const val KEY_DURATION_MS = "durationMs"
         private const val KEY_STATUS = "status"
@@ -43,6 +45,9 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         tripId: String,
         hostUid: String?,
         tripPath: String?,
+        chunkId: String?,
+        sourceAuthorUid: String?,
+        sourceAuthorName: String?,
         createdAtMs: Long,
         durationMs: Long
     ): QueuedTranscriptionChunk? {
@@ -55,7 +60,12 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         }
 
         synchronized(lock) {
-            val id = UUID.randomUUID().toString()
+            val normalizedChunkId = chunkId?.trim().takeIf { !it.isNullOrBlank() }
+            val id = normalizedChunkId ?: UUID.randomUUID().toString()
+            val existing = items.firstOrNull { it.id == id }
+            if (existing != null) {
+                return existing
+            }
             val audioFile = audioFileFor(id)
             val metaFile = metaFileFor(id)
 
@@ -70,6 +80,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                     tripId = tripId,
                     hostUid = hostUid,
                     tripPath = tripPath,
+                    sourceAuthorUid = sourceAuthorUid?.takeIf { it.isNotBlank() },
+                    sourceAuthorName = sourceAuthorName?.takeIf { it.isNotBlank() },
                     createdAtMs = createdAtMs,
                     durationMs = durationMs,
                     status = TranscriptionChunkStatus.PENDING,
@@ -209,6 +221,12 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         }
     }
 
+    override fun findById(chunkId: String): QueuedTranscriptionChunk? {
+        synchronized(lock) {
+            return items.firstOrNull { it.id == chunkId }
+        }
+    }
+
     override fun snapshot(): TranscriptionQueueSnapshot {
         synchronized(lock) {
             sortItemsLocked()
@@ -280,6 +298,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             tripId = json.getString(KEY_TRIP_ID),
             hostUid = json.optString(KEY_HOST_UID).takeIf { it.isNotBlank() },
             tripPath = json.optString(KEY_TRIP_PATH).takeIf { it.isNotBlank() },
+            sourceAuthorUid = json.optString(KEY_SOURCE_AUTHOR_UID).takeIf { it.isNotBlank() },
+            sourceAuthorName = json.optString(KEY_SOURCE_AUTHOR_NAME).takeIf { it.isNotBlank() },
             createdAtMs = json.optLong(KEY_CREATED_AT, System.currentTimeMillis()),
             durationMs = json.optLong(KEY_DURATION_MS, 0L),
             status = runCatching { TranscriptionChunkStatus.valueOf(statusName) }
@@ -297,6 +317,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 put(KEY_TRIP_ID, item.tripId)
                 put(KEY_HOST_UID, item.hostUid)
                 put(KEY_TRIP_PATH, item.tripPath)
+                put(KEY_SOURCE_AUTHOR_UID, item.sourceAuthorUid)
+                put(KEY_SOURCE_AUTHOR_NAME, item.sourceAuthorName)
                 put(KEY_CREATED_AT, item.createdAtMs)
                 put(KEY_DURATION_MS, item.durationMs)
                 put(KEY_STATUS, item.status.name)

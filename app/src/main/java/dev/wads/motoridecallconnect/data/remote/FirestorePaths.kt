@@ -8,5 +8,6 @@ object FirestorePaths {
     const val CONNECTION_PRIVATE = "ConnectionPrivate"
     const val SIGNAL_INBOX = "SignalInbox"
     const val RIDES = "Rides"
+    const val PARTICIPATED_RIDES = "ParticipatedRides"
     const val RIDE_TRANSCRIPTS = "Transcripts"
 }

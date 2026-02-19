@@ -44,6 +44,13 @@ service cloud.firestore {
         allow delete: if isOwner(friendUid) || isOwner(uid);
       }
 
+      // Lightweight references to rides hosted by other users.
+      // Canonical ride/transcript data stays under Accounts/{hostUid}/Rides/{rideId}.
+      match /ParticipatedRides/{refId} {
+        allow get, list: if isOwner(uid);
+        allow create, update, delete: if isOwner(uid);
+      }
+
       // Rides: Owner can manage, Participants can read
       match /Rides/{rideId} {
         

@@ -73,6 +73,7 @@ data class ActiveTripUiState(
     val connectedPeer: Device? = null,
     val audioRouteLabel: String = "Bluetooth headset unavailable",
     val isBluetoothAudioActive: Boolean = false,
+    val isBluetoothRequired: Boolean = true,
     val transcriptEntries: List<TranscriptEntryUi> = emptyList(),
     val transcriptQueue: List<TranscriptQueueItemUi> = emptyList(),
     val transcriptQueuePendingCount: Int = 0,
@@ -133,6 +134,15 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
             viewModelScope.launch {
                 repository.insertTrip(trip)
             }
+        } else if (!targetHostUid.isNullOrBlank() && !myUid.isNullOrBlank()) {
+            viewModelScope.launch {
+                repository.upsertParticipatedRideReference(
+                    hostUid = targetHostUid,
+                    tripId = tripId,
+                    tripPath = tripPath,
+                    joinedAtMs = now
+                )
+            }
         }
 
         // Subscribe to shared transcriptions
@@ -173,6 +183,11 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
     fun endTrip() {
         val trip = activeTrip
+        val currentState = _uiState.value
+        val myUid = FirebaseAuth.getInstance().currentUser?.uid
+        val tripId = currentState.currentTripId
+        val hostUid = currentState.hostUid
+        val tripPath = currentState.tripPath
         activeTrip = null
         currentTripId = null
         transcriptJob?.cancel()
@@ -191,6 +206,15 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
 
         if (trip != null) {
             viewModelScope.launch {
+                if (!myUid.isNullOrBlank() && !hostUid.isNullOrBlank() && hostUid != myUid && !tripId.isNullOrBlank()) {
+                    repository.upsertParticipatedRideReference(
+                        hostUid = hostUid,
+                        tripId = tripId,
+                        tripPath = tripPath
+                    )
+                    return@launch
+                }
+
                 trip.endTime = System.currentTimeMillis()
                 trip.duration = trip.endTime!! - trip.startTime
                 repository.insertTrip(trip)
@@ -239,12 +263,17 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
         }
     }
 
-    fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean) {
+    fun onAudioRouteChanged(routeLabel: String, isBluetoothActive: Boolean, isBluetoothRequired: Boolean) {
         _uiState.update {
             it.copy(
                 audioRouteLabel = routeLabel,
                 isBluetoothAudioActive = isBluetoothActive,
-                isLocalTransmitting = if (isBluetoothActive) it.isLocalTransmitting else false
+                isBluetoothRequired = isBluetoothRequired,
+                isLocalTransmitting = if (isBluetoothRequired && !isBluetoothActive) {
+                    false
+                } else {
+                    it.isLocalTransmitting
+                }
             )
         }
     }

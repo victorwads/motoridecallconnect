@@ -33,6 +33,7 @@ class UserPreferences(private val context: Context) {
         val MICROPHONE_GAIN = floatPreferencesKey("microphone_gain")
         val OUTPUT_VOLUME_RATIO = floatPreferencesKey("output_volume_ratio")
         val TRANSMISSION_BITRATE_KBPS = intPreferencesKey("transmission_bitrate_kbps")
+        val PREFER_BLUETOOTH_AUTOMATICALLY = booleanPreferencesKey("prefer_bluetooth_automatically")
     }
 
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data
@@ -118,6 +119,11 @@ class UserPreferences(private val context: Context) {
     val transmissionBitrateKbps: Flow<Int?> = context.dataStore.data
         .map { preferences ->
             preferences[TRANSMISSION_BITRATE_KBPS]
+        }
+
+    val preferBluetoothAutomatically: Flow<Boolean> = context.dataStore.data
+        .map { preferences ->
+            preferences[PREFER_BLUETOOTH_AUTOMATICALLY] ?: true
         }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
@@ -219,6 +225,12 @@ class UserPreferences(private val context: Context) {
     suspend fun setTransmissionBitrateKbps(kbps: Int) {
         context.dataStore.edit { preferences ->
             preferences[TRANSMISSION_BITRATE_KBPS] = kbps
+        }
+    }
+
+    suspend fun setPreferBluetoothAutomatically(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PREFER_BLUETOOTH_AUTOMATICALLY] = enabled
         }
     }
 }

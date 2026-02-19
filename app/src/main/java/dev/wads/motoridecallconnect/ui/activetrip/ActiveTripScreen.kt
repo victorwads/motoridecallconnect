@@ -215,15 +215,17 @@ fun ActiveTripScreen(
 
 @Composable
 private fun BluetoothAudioRouteCard(uiState: ActiveTripUiState) {
-    val statusColor = if (uiState.isBluetoothAudioActive) {
-        Color(0xFF22C55E)
-    } else {
-        MaterialTheme.colorScheme.error
+    val statusColor = when {
+        uiState.isBluetoothRequired && !uiState.isBluetoothAudioActive -> MaterialTheme.colorScheme.error
+        else -> Color(0xFF22C55E)
     }
-    val statusText = if (uiState.isBluetoothAudioActive) {
-        stringResource(R.string.bluetooth_audio_active)
-    } else {
-        stringResource(R.string.bluetooth_audio_required)
+    val statusText = when {
+        uiState.isBluetoothRequired && uiState.isBluetoothAudioActive ->
+            stringResource(R.string.bluetooth_audio_active)
+        uiState.isBluetoothRequired ->
+            stringResource(R.string.bluetooth_audio_required)
+        else ->
+            stringResource(R.string.bluetooth_audio_optional)
     }
 
     StatusCard(title = stringResource(R.string.audio_route_title), icon = Icons.Default.Headphones) {

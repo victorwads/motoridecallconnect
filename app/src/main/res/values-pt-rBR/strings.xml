@@ -64,6 +64,7 @@
     <string name="trip_header">Viagem</string>
     <string name="end_trip_action">Finalizar Viagem</string>
     <string name="start_trip_action">Iniciar Viagem</string>
+    <string name="bluetooth_audio_optional">Usando a rota de áudio disponível no telefone</string>
     <string name="config_header">Configuração</string>
     <string name="operation_mode_header">Modo de Operação</string>
     <string name="start_command_label">Comando para Iniciar</string>

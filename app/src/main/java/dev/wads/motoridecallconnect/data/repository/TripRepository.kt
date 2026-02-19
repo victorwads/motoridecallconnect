@@ -15,10 +15,12 @@ import dev.wads.motoridecallconnect.data.model.TranscriptLine
 import dev.wads.motoridecallconnect.data.model.TranscriptStatus
 import dev.wads.motoridecallconnect.data.model.Trip
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -29,33 +31,139 @@ import kotlin.coroutines.resumeWithException
 class TripRepository(private val tripDaoProvider: () -> TripDao) {
     companion object {
         private const val TAG = "TripRepository"
+        private const val REFERENCE_TRIP_ID_PREFIX = "ref__"
+        private const val REFERENCE_TRIP_ID_SEPARATOR = "__"
     }
 
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
 
+    private data class ParticipatedRideReference(
+        val hostUid: String,
+        val tripId: String,
+        val tripPath: String?,
+        val joinedAtMs: Long
+    )
+
+    private data class TripTarget(
+        val hostUid: String,
+        val canonicalTripId: String,
+        val isReference: Boolean,
+        val referenceDocId: String?
+    )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun getAllTrips(): Flow<List<Trip>> {
         val user = auth.currentUser
         return if (user != null) {
-            callbackFlow {
-                val listenerInfo = firestore.collection(FirestorePaths.ACCOUNTS).document(user.uid).collection(FirestorePaths.RIDES)
-                    .orderBy("startTime", Query.Direction.DESCENDING)
-                    .addSnapshotListener { value, error ->
+            combine(
+                observeOwnedTrips(user.uid),
+                observeParticipatedRideReferences(user.uid)
+                    .flatMapLatest { references -> observeTripsFromParticipatedReferences(references) }
+            ) { ownedTrips, participatedTrips ->
+                (ownedTrips + participatedTrips)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.startTime }
+            }
+        } else {
+            tripDaoProvider().getAllTrips()
+        }
+    }
+
+    private fun observeOwnedTrips(uid: String): Flow<List<Trip>> {
+        return callbackFlow {
+            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                .document(uid)
+                .collection(FirestorePaths.RIDES)
+                .orderBy("startTime", Query.Direction.DESCENDING)
+                .addSnapshotListener { value, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+                    val trips = value?.documents?.mapNotNull { document ->
+                        safeTrip(document)
+                    }.orEmpty()
+                    trySend(trips)
+                }
+            awaitClose { listener.remove() }
+        }
+    }
+
+    private fun observeParticipatedRideReferences(uid: String): Flow<List<ParticipatedRideReference>> {
+        return callbackFlow {
+            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                .document(uid)
+                .collection(FirestorePaths.PARTICIPATED_RIDES)
+                .addSnapshotListener { value, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+                    val refs = value?.documents?.mapNotNull { document ->
+                        val hostUid = document.getString("hostUid")?.trim().orEmpty()
+                        val tripId = document.getString("tripId")?.trim().orEmpty()
+                        if (hostUid.isBlank() || tripId.isBlank()) {
+                            return@mapNotNull null
+                        }
+                        ParticipatedRideReference(
+                            hostUid = hostUid,
+                            tripId = tripId,
+                            tripPath = document.getString("tripPath")?.takeIf { it.isNotBlank() },
+                            joinedAtMs = document.getLong("joinedAtMs") ?: System.currentTimeMillis()
+                        )
+                    }.orEmpty()
+                    trySend(refs)
+                }
+            awaitClose { listener.remove() }
+        }
+    }
+
+    private fun observeTripsFromParticipatedReferences(
+        references: List<ParticipatedRideReference>
+    ): Flow<List<Trip>> {
+        if (references.isEmpty()) {
+            return flowOf(emptyList())
+        }
+
+        return callbackFlow {
+            val refsByKey = references.associateBy { ref ->
+                buildParticipatedRideRefDocId(ref.hostUid, ref.tripId)
+            }
+            val tripsByRefKey = mutableMapOf<String, Trip>()
+            val listeners = mutableListOf<ListenerRegistration>()
+
+            trySend(emptyList())
+
+            refsByKey.forEach { (refKey, ref) ->
+                val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                    .document(ref.hostUid)
+                    .collection(FirestorePaths.RIDES)
+                    .document(ref.tripId)
+                    .addSnapshotListener { snapshot, error ->
                         if (error != null) {
                             close(error)
                             return@addSnapshotListener
                         }
-                        if (value != null) {
-                            val trips = value.documents.mapNotNull { document ->
-                                safeTrip(document)
-                            }
-                            trySend(trips)
+
+                        val parsedTrip = snapshot?.takeIf { it.exists() }?.let { safeTrip(it) }
+                        if (parsedTrip == null) {
+                            tripsByRefKey.remove(refKey)
+                        } else {
+                            tripsByRefKey[refKey] = parsedTrip.copy(
+                                id = buildReferenceTripId(ref.hostUid, parsedTrip.id.ifBlank { ref.tripId })
+                            )
                         }
+
+                        val ordered = tripsByRefKey.values
+                            .toList()
+                            .sortedByDescending { it.startTime }
+                        trySend(ordered)
                     }
-                awaitClose { listenerInfo.remove() }
+                listeners.add(listener)
             }
-        } else {
-            tripDaoProvider().getAllTrips()
+
+            awaitClose { listeners.forEach { it.remove() } }
         }
     }
 
@@ -71,11 +179,12 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
                 trySend(transcriptStatus.toMap())
 
-                distinctTripIds.forEach { tripId ->
+                distinctTripIds.forEach { historyTripId ->
+                    val target = parseTripTarget(historyTripId, user.uid)
                     val listener = firestore.collection(FirestorePaths.ACCOUNTS)
-                        .document(user.uid)
+                        .document(target.hostUid)
                         .collection(FirestorePaths.RIDES)
-                        .document(tripId)
+                        .document(target.canonicalTripId)
                         .collection(FirestorePaths.RIDE_TRANSCRIPTS)
                         .limit(1)
                         .addSnapshotListener { snapshot, error ->
@@ -84,7 +193,7 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                                 return@addSnapshotListener
                             }
 
-                            transcriptStatus[tripId] = snapshot?.isEmpty == false
+                            transcriptStatus[historyTripId] = snapshot?.isEmpty == false
                             trySend(transcriptStatus.toMap())
                         }
 
@@ -109,24 +218,30 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
     fun getTripWithTranscripts(tripId: String): Flow<TripWithTranscripts?> {
         val user = auth.currentUser
         return if (user != null) {
-             callbackFlow {
-                 val tripRef = firestore.collection(FirestorePaths.ACCOUNTS).document(user.uid).collection(FirestorePaths.RIDES).document(tripId)
-                 val listener = tripRef.addSnapshotListener { snapshot, error ->
-                     if (error != null) {
-                         close(error)
-                         return@addSnapshotListener
-                     }
-                     if (snapshot != null && snapshot.exists()) {
-                         val trip = safeTrip(snapshot)
-                         if (trip != null) {
-                             trySend(TripWithTranscripts(trip, emptyList()))
-                         }
-                     } else {
-                         trySend(null)
-                     }
-                 }
-                 awaitClose { listener.remove() }
-             }
+            callbackFlow {
+                val target = parseTripTarget(tripId, user.uid)
+                val tripRef = firestore.collection(FirestorePaths.ACCOUNTS)
+                    .document(target.hostUid)
+                    .collection(FirestorePaths.RIDES)
+                    .document(target.canonicalTripId)
+                val listener = tripRef.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        close(error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        val trip = safeTrip(snapshot)
+                        if (trip != null) {
+                            // Keep the requested history identifier so downstream actions
+                            // (detail route, delete reference, etc.) stay deterministic.
+                            trySend(TripWithTranscripts(trip.copy(id = tripId), emptyList()))
+                        }
+                    } else {
+                        trySend(null)
+                    }
+                }
+                awaitClose { listener.remove() }
+            }
         } else {
             tripDaoProvider().getTripWithTranscripts(tripId).map { it }
         }
@@ -227,6 +342,42 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
         }
     }
 
+    fun getTranscriptEntriesForHistoryTrip(historyTripId: String): Flow<List<TranscriptEntry>> {
+        val user = auth.currentUser ?: return flowOf(emptyList())
+        val target = parseTripTarget(historyTripId, user.uid)
+        return getTranscriptEntries(target.hostUid, target.canonicalTripId)
+    }
+
+    suspend fun upsertParticipatedRideReference(
+        hostUid: String,
+        tripId: String,
+        tripPath: String?,
+        joinedAtMs: Long = System.currentTimeMillis()
+    ) {
+        val user = auth.currentUser ?: return
+        val normalizedHostUid = hostUid.trim()
+        val normalizedTripId = tripId.trim()
+        if (normalizedHostUid.isBlank() || normalizedTripId.isBlank()) {
+            return
+        }
+        if (normalizedHostUid == user.uid) {
+            return
+        }
+
+        val payload = mapOf(
+            "hostUid" to normalizedHostUid,
+            "tripId" to normalizedTripId,
+            "tripPath" to (tripPath?.takeIf { it.isNotBlank() }),
+            "joinedAtMs" to joinedAtMs
+        )
+        firestore.collection(FirestorePaths.ACCOUNTS)
+            .document(user.uid)
+            .collection(FirestorePaths.PARTICIPATED_RIDES)
+            .document(buildParticipatedRideRefDocId(normalizedHostUid, normalizedTripId))
+            .set(payload, SetOptions.merge())
+            .await()
+    }
+
     suspend fun insertTranscriptLine(transcriptLine: TranscriptLine, targetHostUid: String? = null) {
         val user = auth.currentUser
         if (user != null) {
@@ -282,10 +433,23 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
     suspend fun deleteTrip(tripId: String) {
         val user = auth.currentUser
         if (user != null) {
+            val target = parseTripTarget(tripId, user.uid)
+            if (target.isReference) {
+                target.referenceDocId?.let { referenceDocId ->
+                    firestore.collection(FirestorePaths.ACCOUNTS)
+                        .document(user.uid)
+                        .collection(FirestorePaths.PARTICIPATED_RIDES)
+                        .document(referenceDocId)
+                        .delete()
+                        .await()
+                }
+                return
+            }
+
             val tripRef = firestore.collection(FirestorePaths.ACCOUNTS)
-                .document(user.uid)
+                .document(target.hostUid)
                 .collection(FirestorePaths.RIDES)
-                .document(tripId)
+                .document(target.canonicalTripId)
 
             deleteCollectionInBatches(tripRef.collection(FirestorePaths.RIDE_TRANSCRIPTS))
             tripRef.delete().await()
@@ -376,6 +540,55 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
             text = raw["text"].asStringOrNull().orEmpty(),
             timestamp = raw["timestamp"].asLong(default = System.currentTimeMillis()),
             isPartial = inferredPartial
+        )
+    }
+
+    private fun buildParticipatedRideRefDocId(hostUid: String, tripId: String): String {
+        return "$hostUid$REFERENCE_TRIP_ID_SEPARATOR$tripId"
+    }
+
+    private fun buildReferenceTripId(hostUid: String, tripId: String): String {
+        return "$REFERENCE_TRIP_ID_PREFIX$hostUid$REFERENCE_TRIP_ID_SEPARATOR$tripId"
+    }
+
+    private fun parseTripTarget(historyTripId: String, fallbackHostUid: String): TripTarget {
+        if (!historyTripId.startsWith(REFERENCE_TRIP_ID_PREFIX)) {
+            return TripTarget(
+                hostUid = fallbackHostUid,
+                canonicalTripId = historyTripId,
+                isReference = false,
+                referenceDocId = null
+            )
+        }
+
+        val encoded = historyTripId.removePrefix(REFERENCE_TRIP_ID_PREFIX)
+        val separatorIndex = encoded.indexOf(REFERENCE_TRIP_ID_SEPARATOR)
+        if (separatorIndex <= 0 || separatorIndex >= encoded.length - REFERENCE_TRIP_ID_SEPARATOR.length) {
+            Log.w(TAG, "Invalid reference trip identifier '$historyTripId'. Falling back to owner trip lookup.")
+            return TripTarget(
+                hostUid = fallbackHostUid,
+                canonicalTripId = historyTripId,
+                isReference = false,
+                referenceDocId = null
+            )
+        }
+
+        val hostUid = encoded.substring(0, separatorIndex).trim()
+        val canonicalTripId = encoded.substring(separatorIndex + REFERENCE_TRIP_ID_SEPARATOR.length).trim()
+        if (hostUid.isBlank() || canonicalTripId.isBlank()) {
+            return TripTarget(
+                hostUid = fallbackHostUid,
+                canonicalTripId = historyTripId,
+                isReference = false,
+                referenceDocId = null
+            )
+        }
+
+        return TripTarget(
+            hostUid = hostUid,
+            canonicalTripId = canonicalTripId,
+            isReference = true,
+            referenceDocId = buildParticipatedRideRefDocId(hostUid, canonicalTripId)
         )
     }
 

@@ -41,7 +41,7 @@ class TripDetailViewModel(private val repository: TripRepository) : ViewModel() 
             val transcriptFlow = if (currentUserId.isNullOrEmpty()) {
                 flowOf(emptyList())
             } else {
-                repository.getTranscriptEntries(currentUserId, tripId)
+                repository.getTranscriptEntriesForHistoryTrip(tripId)
             }
 
             combine(

@@ -210,28 +210,29 @@ private fun TranscriptFeedLine(
             }
         }
 
-        // Play/Stop + Retry actions (available on non-PROCESSING and non-QUEUED items)
-        if (item.status != TranscriptStatus.PROCESSING && item.status != TranscriptStatus.QUEUED) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Play / Stop toggle
-                IconButton(
-                    onClick = {
-                        if (isPlaying) {
-                            onStopAudio?.invoke()
-                        } else {
-                            onPlayAudio?.invoke(item.id)
-                        }
-                    },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Stop" else "Play",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                // Retry
+        val canRetry =
+            item.status == TranscriptStatus.ERROR || item.status == TranscriptStatus.SUCCESS
+
+        // Play/Stop is always available. Retry appears only on SUCCESS/ERROR.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = {
+                    if (isPlaying) {
+                        onStopAudio?.invoke()
+                    } else {
+                        onPlayAudio?.invoke(item.id)
+                    }
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Stop" else "Play",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            if (canRetry) {
                 IconButton(
                     onClick = { onRetry?.invoke(item.id) },
                     modifier = Modifier.size(28.dp)

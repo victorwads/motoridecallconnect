@@ -16,7 +16,9 @@ import android.widget.Toast
 import java.io.File
 import java.net.URL
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -38,6 +40,9 @@ class SpeechRecognizerHelper(
         private const val MIN_WHISPER_SAMPLES = 16_000 // 1 second at 16 kHz
         private const val MIN_SYSTEM_SAMPLES = 24_000 // 0.5 second at 48 kHz
         private const val SYSTEM_STT_TIMEOUT_SECONDS = 18L
+        private const val SYSTEM_STT_PIPE_WRITE_TIMEOUT_SECONDS = 10L
+        private const val SYSTEM_STT_PIPE_WRITE_CHUNK_BYTES = 8_192
+        private const val WHISPER_KIT_CHUNK_TIMEOUT_SECONDS = 90L
         private const val LEGACY_RESTART_DELAY_MS = 300L
 
         private const val EXTRA_AUDIO_SOURCE = "android.speech.extra.AUDIO_SOURCE"
@@ -63,7 +68,8 @@ class SpeechRecognizerHelper(
     var isUsingWhisper = false
         private set
 
-    private var isListening = false
+    // Controls only the live microphone/listening session.
+    private var isRealtimeListening = false
     private var isDestroyed = false
     private var whisperChunkCount = 0L
     private var systemChunkCount = 0L
@@ -114,8 +120,6 @@ class SpeechRecognizerHelper(
 
         if (previous == SttEngine.NATIVE && engine != SttEngine.NATIVE) {
             stopLegacyNativeRecognizer()
-        } else if (engine == SttEngine.NATIVE && isListening && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            startLegacyNativeRecognizer()
         }
 
         Log.i(TAG, "STT engine changed from $previous to $selectedEngine")
@@ -157,9 +161,6 @@ class SpeechRecognizerHelper(
         }
         selectedNativeLanguageTag = normalized
         Log.i(TAG, "Native STT language changed to $selectedNativeLanguageTag")
-        if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            restartLegacyNativeRecognizer()
-        }
     }
 
     private fun checkAndInitWhisper(): Boolean {
@@ -261,7 +262,7 @@ class SpeechRecognizerHelper(
     }
 
     fun startListening() {
-        isListening = true
+        isRealtimeListening = true
 
         if (selectedEngine == SttEngine.WHISPER) {
             val whisperReady = checkAndInitWhisper()
@@ -281,7 +282,13 @@ class SpeechRecognizerHelper(
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            startLegacyNativeRecognizer()
+            if (selectedEngine == SttEngine.NATIVE) {
+                Log.w(
+                    TAG,
+                    "Native chunk STT requires Android 13+ for injected PCM source. " +
+                        "Live native microphone recognizer is disabled in this architecture."
+                )
+            }
             return
         }
 
@@ -293,7 +300,7 @@ class SpeechRecognizerHelper(
     }
 
     fun stopListening() {
-        isListening = false
+        isRealtimeListening = false
         stopLegacyNativeRecognizer()
         synchronized(whisperLock) {
             if (isUsingWhisper) {
@@ -310,7 +317,10 @@ class SpeechRecognizerHelper(
     }
 
     fun processAudio(data: ByteArray) {
-        val result = transcribeChunkInternal(data, allowLegacyNativeFallback = true)
+        val result = transcribeChunkInternal(
+            data = data,
+            requiresRealtimeSession = true
+        )
         if (!result.error.isNullOrBlank()) {
             listener.onError(result.error)
             return
@@ -322,26 +332,17 @@ class SpeechRecognizerHelper(
     }
 
     fun transcribeChunk(data: ByteArray): ChunkTranscriptionResult {
-        val shouldRestoreListeningState = !isListening
-        if (shouldRestoreListeningState) {
-            // Queue-based transcription can run with no active trip. Keep it mic-free by
-            // enabling only the internal chunk session state temporarily.
-            isListening = true
-        }
-        return try {
-            transcribeChunkInternal(data, allowLegacyNativeFallback = false)
-        } finally {
-            if (shouldRestoreListeningState) {
-                isListening = false
-            }
-        }
+        return transcribeChunkInternal(
+            data = data,
+            requiresRealtimeSession = false
+        )
     }
 
     private fun transcribeChunkInternal(
         data: ByteArray,
-        allowLegacyNativeFallback: Boolean
+        requiresRealtimeSession: Boolean
     ): ChunkTranscriptionResult {
-        if (!isListening) {
+        if (requiresRealtimeSession && !isRealtimeListening) {
             return ChunkTranscriptionResult(error = "Speech recognizer helper is not listening.")
         }
 
@@ -372,12 +373,6 @@ class SpeechRecognizerHelper(
         }
 
         if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            if (allowLegacyNativeFallback) {
-                if (!isLegacyNativeSessionRunning) {
-                    startLegacyNativeRecognizer()
-                }
-                return ChunkTranscriptionResult()
-            }
             return ChunkTranscriptionResult(
                 error = "Native chunk STT requires Android 13+ for injected PCM audio source."
             )
@@ -431,7 +426,15 @@ class SpeechRecognizerHelper(
         val pcm16kBytes = buffer.array()
 
         val text = kotlinx.coroutines.runBlocking {
-            whisperKitWrapper?.transcribe(pcm16kBytes)
+            kotlinx.coroutines.withTimeoutOrNull(TimeUnit.SECONDS.toMillis(WHISPER_KIT_CHUNK_TIMEOUT_SECONDS)) {
+                whisperKitWrapper?.transcribe(pcm16kBytes)
+            }
+        }
+        if (text == null) {
+            Log.e(TAG, "[STT_QUEUE] WhisperKit chunk timeout after ${WHISPER_KIT_CHUNK_TIMEOUT_SECONDS}s")
+            return ChunkTranscriptionResult(
+                error = "WhisperKit chunk timeout (${WHISPER_KIT_CHUNK_TIMEOUT_SECONDS}s)."
+            )
         }
         
         if (!text.isNullOrBlank()) {
@@ -451,7 +454,7 @@ class SpeechRecognizerHelper(
         }
 
         mainHandler.post {
-            if (isDestroyed || !isListening || selectedEngine != SttEngine.NATIVE) {
+            if (isDestroyed || !isRealtimeListening || selectedEngine != SttEngine.NATIVE) {
                 return@post
             }
 
@@ -533,7 +536,7 @@ class SpeechRecognizerHelper(
 
     private fun restartLegacyNativeRecognizer() {
         isLegacyNativeSessionRunning = false
-        if (!isListening || isDestroyed || selectedEngine != SttEngine.NATIVE) {
+        if (!isRealtimeListening || isDestroyed || selectedEngine != SttEngine.NATIVE) {
             stopLegacyNativeRecognizer()
             return
         }
@@ -595,7 +598,7 @@ class SpeechRecognizerHelper(
         whisperChunkCount++
         val startMs = System.currentTimeMillis()
         val result = synchronized(whisperLock) {
-            if (!isUsingWhisper || isDestroyed || !isListening) {
+            if (!isUsingWhisper || isDestroyed) {
                 null
             } else {
                 whisperLib.transcribeBuffer(pcm16k)
@@ -692,6 +695,12 @@ class SpeechRecognizerHelper(
         var readPipe: ParcelFileDescriptor? = null
         var writePipe: ParcelFileDescriptor? = null
 
+        val transcribeStartMs = System.currentTimeMillis()
+        Log.d(
+            TAG,
+            "[STT_QUEUE] Native chunk transcription start. bytes=${data.size}, timeout=${SYSTEM_STT_TIMEOUT_SECONDS}s"
+        )
+
         mainHandler.post {
             try {
                 recognizer = SpeechRecognizer.createSpeechRecognizer(context)
@@ -768,6 +777,7 @@ class SpeechRecognizerHelper(
         if (!startLatch.await(2, TimeUnit.SECONDS)) {
             return ChunkTranscriptionResult(error = "Native chunk recognizer setup timeout.")
         }
+        Log.d(TAG, "[STT_QUEUE] Native recognizer setup completed in ${System.currentTimeMillis() - transcribeStartMs}ms")
 
         val writer = writePipe
         if (writer == null) {
@@ -777,22 +787,59 @@ class SpeechRecognizerHelper(
             )
         }
 
-        try {
+        val writeExecutor = Executors.newSingleThreadExecutor()
+        val writeFuture = writeExecutor.submit<Boolean> {
             ParcelFileDescriptor.AutoCloseOutputStream(writer).use { output ->
-                output.write(data)
+                var offset = 0
+                while (offset < data.size) {
+                    val remaining = data.size - offset
+                    val writeSize = minOf(remaining, SYSTEM_STT_PIPE_WRITE_CHUNK_BYTES)
+                    output.write(data, offset, writeSize)
+                    offset += writeSize
+                }
                 output.flush()
             }
-        } catch (t: Throwable) {
+            true
+        }
+        try {
+            Log.d(TAG, "[STT_QUEUE] Streaming PCM to native recognizer. bytes=${data.size}")
+            writeFuture.get(SYSTEM_STT_PIPE_WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            Log.d(TAG, "[STT_QUEUE] PCM stream completed in ${System.currentTimeMillis() - transcribeStartMs}ms")
+        } catch (_: TimeoutException) {
+            writeFuture.cancel(true)
+            runCatching { writer.close() }
             cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            Log.e(
+                TAG,
+                "[STT_QUEUE] Native chunk write timeout after ${SYSTEM_STT_PIPE_WRITE_TIMEOUT_SECONDS}s. bytes=${data.size}"
+            )
+            return ChunkTranscriptionResult(
+                error = "Native chunk audio stream timeout (${SYSTEM_STT_PIPE_WRITE_TIMEOUT_SECONDS}s)."
+            )
+        } catch (t: Throwable) {
+            writeFuture.cancel(true)
+            cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            Log.e(TAG, "[STT_QUEUE] Failed to stream PCM chunk to native recognizer", t)
             return ChunkTranscriptionResult(error = "Failed to stream PCM chunk to native recognizer: ${t.message}")
+        } finally {
+            writeExecutor.shutdownNow()
         }
 
+        Log.d(TAG, "[STT_QUEUE] Waiting native recognition result. timeout=${SYSTEM_STT_TIMEOUT_SECONDS}s")
         if (!resultLatch.await(SYSTEM_STT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+            Log.e(
+                TAG,
+                "[STT_QUEUE] Native recognition timeout after ${SYSTEM_STT_TIMEOUT_SECONDS}s. bytes=${data.size}"
+            )
             return ChunkTranscriptionResult(error = "Native chunk recognition timeout.")
         }
 
         cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+        Log.d(
+            TAG,
+            "[STT_QUEUE] Native chunk transcription completed in ${System.currentTimeMillis() - transcribeStartMs}ms"
+        )
 
         return ChunkTranscriptionResult(
             text = textRef.get(),
@@ -877,7 +924,7 @@ class SpeechRecognizerHelper(
     }
 
     fun destroy() {
-        isListening = false
+        isRealtimeListening = false
         isDestroyed = true
         stopLegacyNativeRecognizer()
         synchronized(whisperLock) {
