@@ -102,6 +102,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         private const val TRANSCRIPTION_TRIM_PREROLL_MS = 200L
         private const val TRANSCRIPTION_TRIM_POSTROLL_MS = 200L
         private const val TRANSCRIPTION_MIN_TRIMMED_MS = 700L
+        private const val TRANSCRIPTION_PROGRESS_PUBLISH_INTERVAL_MS = 750L
+        private const val TRANSCRIPTION_PROGRESS_PUBLISH_STEP_PERCENT = 5
 
         private const val CHUNK_SHARE_PART_SIZE_BYTES = 8_000
         private const val CHUNK_SHARE_RETRY_TICK_MS = 2_500L
@@ -2065,7 +2067,43 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
 
                 val startMs = System.currentTimeMillis()
                 Log.d(TAG, "[STT_QUEUE] Transcription started. queueId=${queuedChunk.id}, engine=$sttEngine")
-                val result = runCatching { recognizer.transcribeChunk(audioBytes) }
+                var lastPublishedProgress: Int? = null
+                var lastPublishedProgressAtMs = 0L
+                val result = runCatching {
+                    recognizer.transcribeChunk(
+                        data = audioBytes,
+                        progressListener = SpeechRecognizerHelper.ChunkTranscriptionProgressListener { progressPercent ->
+                            val normalized = progressPercent?.coerceIn(0, 100)
+                            val nowMs = System.currentTimeMillis()
+                            val previous = lastPublishedProgress
+                            if (normalized == null) {
+                                if (previous == null) {
+                                    return@ChunkTranscriptionProgressListener
+                                }
+                            } else {
+                                val stepReached = previous == null ||
+                                    normalized >= previous + TRANSCRIPTION_PROGRESS_PUBLISH_STEP_PERCENT ||
+                                    normalized == 100
+                                val intervalReached =
+                                    nowMs - lastPublishedProgressAtMs >= TRANSCRIPTION_PROGRESS_PUBLISH_INTERVAL_MS
+                                if (!stepReached && !intervalReached) {
+                                    return@ChunkTranscriptionProgressListener
+                                }
+                            }
+                            lastPublishedProgress = normalized
+                            lastPublishedProgressAtMs = nowMs
+                            transcriptionQueue.updateProgress(queuedChunk.id, normalized)
+                            persistTranscriptChunkToFirebase(
+                                chunk = queuedChunk,
+                                status = TranscriptStatus.PROCESSING,
+                                text = "",
+                                errorMessage = null,
+                                progressPercent = normalized
+                            )
+                            publishTranscriptionQueueSnapshot(reason = "chunk_processing_progress")
+                        }
+                    )
+                }
                     .getOrElse { throwable ->
                         SpeechRecognizerHelper.ChunkTranscriptionResult(
                             error = throwable.message ?: "Unknown STT processing failure."
@@ -2168,7 +2206,8 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         chunk: QueuedTranscriptionChunk,
         status: TranscriptStatus,
         text: String,
-        errorMessage: String?
+        errorMessage: String?,
+        progressPercent: Int? = null
     ) {
         lifecycleScope.launch {
             val currentUser = FirebaseAuth.getInstance().currentUser ?: return@launch
@@ -2199,6 +2238,10 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
                 "audioFileName" to java.io.File(chunk.audioFilePath).name
             )
             payload["errorMessage"] = errorMessage
+            payload["progressPercent"] = when {
+                status == TranscriptStatus.PROCESSING -> progressPercent?.coerceIn(0, 100)
+                else -> null
+            }
 
             try {
                 firestore.collection(FirestorePaths.ACCOUNTS)

@@ -26,6 +26,7 @@
     </queries>
 
     <application
+        android:name=".MotoRideApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -47,6 +48,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".StorageManagementActivity"
+            android:exported="false"
+            android:label="@string/storage_management_title"
+            android:theme="@style/Theme.MotoRideCallConnect" />
 
         <service
             android:name=".service.AudioService"

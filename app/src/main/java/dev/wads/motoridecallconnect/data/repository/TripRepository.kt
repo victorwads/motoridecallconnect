@@ -8,6 +8,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import dev.wads.motoridecallconnect.data.model.TranscriptEntry
 import dev.wads.motoridecallconnect.data.local.TripDao
 import dev.wads.motoridecallconnect.data.local.TripWithTranscripts
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import kotlin.coroutines.resume
@@ -72,10 +74,22 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
     private fun observeOwnedTrips(uid: String): Flow<List<Trip>> {
         return callbackFlow {
-            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+            val query = firestore.collection(FirestorePaths.ACCOUNTS)
                 .document(uid)
                 .collection(FirestorePaths.RIDES)
                 .orderBy("startTime", Query.Direction.DESCENDING)
+            launch {
+                val cached = runCatching { query.get(Source.CACHE).await() }
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to read owned trips from cache first", error)
+                    }
+                    .getOrNull()
+                if (cached != null) {
+                    val cachedTrips = cached.documents.mapNotNull { document -> safeTrip(document) }
+                    trySend(cachedTrips)
+                }
+            }
+            val listener = query
                 .addSnapshotListener { value, error ->
                     if (error != null) {
                         close(error)
@@ -92,9 +106,33 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
     private fun observeParticipatedRideReferences(uid: String): Flow<List<ParticipatedRideReference>> {
         return callbackFlow {
-            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+            val query = firestore.collection(FirestorePaths.ACCOUNTS)
                 .document(uid)
                 .collection(FirestorePaths.PARTICIPATED_RIDES)
+            launch {
+                val cached = runCatching { query.get(Source.CACHE).await() }
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to read participated ride refs from cache first", error)
+                    }
+                    .getOrNull()
+                if (cached != null) {
+                    val refs = cached.documents.mapNotNull { document ->
+                        val hostUid = document.getString("hostUid")?.trim().orEmpty()
+                        val tripId = document.getString("tripId")?.trim().orEmpty()
+                        if (hostUid.isBlank() || tripId.isBlank()) {
+                            return@mapNotNull null
+                        }
+                        ParticipatedRideReference(
+                            hostUid = hostUid,
+                            tripId = tripId,
+                            tripPath = document.getString("tripPath")?.takeIf { it.isNotBlank() },
+                            joinedAtMs = document.getLong("joinedAtMs") ?: System.currentTimeMillis()
+                        )
+                    }
+                    trySend(refs)
+                }
+            }
+            val listener = query
                 .addSnapshotListener { value, error ->
                     if (error != null) {
                         close(error)
@@ -136,10 +174,36 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
             trySend(emptyList())
 
             refsByKey.forEach { (refKey, ref) ->
-                val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                val tripDoc = firestore.collection(FirestorePaths.ACCOUNTS)
                     .document(ref.hostUid)
                     .collection(FirestorePaths.RIDES)
                     .document(ref.tripId)
+                launch {
+                    val cached = runCatching { tripDoc.get(Source.CACHE).await() }
+                        .onFailure { error ->
+                            Log.w(
+                                TAG,
+                                "Failed to read participated trip from cache first. hostUid=${ref.hostUid}, tripId=${ref.tripId}",
+                                error
+                            )
+                        }
+                        .getOrNull()
+                    if (cached != null) {
+                        val parsedTrip = cached.takeIf { it.exists() }?.let { safeTrip(it) }
+                        if (parsedTrip == null) {
+                            tripsByRefKey.remove(refKey)
+                        } else {
+                            tripsByRefKey[refKey] = parsedTrip.copy(
+                                id = buildReferenceTripId(ref.hostUid, parsedTrip.id.ifBlank { ref.tripId })
+                            )
+                        }
+                        val ordered = tripsByRefKey.values
+                            .toList()
+                            .sortedByDescending { it.startTime }
+                        trySend(ordered)
+                    }
+                }
+                val listener = tripDoc
                     .addSnapshotListener { snapshot, error ->
                         if (error != null) {
                             close(error)
@@ -181,12 +245,28 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
                 distinctTripIds.forEach { historyTripId ->
                     val target = parseTripTarget(historyTripId, user.uid)
-                    val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+                    val query = firestore.collection(FirestorePaths.ACCOUNTS)
                         .document(target.hostUid)
                         .collection(FirestorePaths.RIDES)
                         .document(target.canonicalTripId)
                         .collection(FirestorePaths.RIDE_TRANSCRIPTS)
                         .limit(1)
+                    launch {
+                        val cached = runCatching { query.get(Source.CACHE).await() }
+                            .onFailure { error ->
+                                Log.w(
+                                    TAG,
+                                    "Failed to read transcript availability from cache first. historyTripId=$historyTripId",
+                                    error
+                                )
+                            }
+                            .getOrNull()
+                        if (cached != null) {
+                            transcriptStatus[historyTripId] = !cached.isEmpty
+                            trySend(transcriptStatus.toMap())
+                        }
+                    }
+                    val listener = query
                         .addSnapshotListener { snapshot, error ->
                             if (error != null) {
                                 close(error)
@@ -224,6 +304,19 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                     .document(target.hostUid)
                     .collection(FirestorePaths.RIDES)
                     .document(target.canonicalTripId)
+                launch {
+                    val cached = runCatching { tripRef.get(Source.CACHE).await() }
+                        .onFailure { error ->
+                            Log.w(TAG, "Failed to read trip detail from cache first. tripId=$tripId", error)
+                        }
+                        .getOrNull()
+                    if (cached != null && cached.exists()) {
+                        val trip = safeTrip(cached)
+                        if (trip != null) {
+                            trySend(TripWithTranscripts(trip.copy(id = tripId), emptyList()))
+                        }
+                    }
+                }
                 val listener = tripRef.addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         close(error)
@@ -270,12 +363,26 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
     fun getTranscripts(hostUid: String, tripId: String): Flow<List<TranscriptLine>> {
         return callbackFlow {
-            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+            val query = firestore.collection(FirestorePaths.ACCOUNTS)
                 .document(hostUid)
                 .collection(FirestorePaths.RIDES)
                 .document(tripId)
                 .collection(FirestorePaths.RIDE_TRANSCRIPTS)
                 .orderBy("timestamp", Query.Direction.ASCENDING)
+            launch {
+                val cached = runCatching { query.get(Source.CACHE).await() }
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to read transcript lines from cache first. tripId=$tripId", error)
+                    }
+                    .getOrNull()
+                if (cached != null) {
+                    val lines = cached.documents.mapNotNull { document ->
+                        safeTranscriptLine(document, fallbackTripId = tripId)
+                    }.sortedBy { line -> line.timestamp }
+                    trySend(lines)
+                }
+            }
+            val listener = query
                 .addSnapshotListener { value, error ->
                     if (error != null) {
                         close(error)
@@ -294,12 +401,56 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
 
     fun getTranscriptEntries(hostUid: String, tripId: String): Flow<List<TranscriptEntry>> {
         return callbackFlow {
-            val listener = firestore.collection(FirestorePaths.ACCOUNTS)
+            val query = firestore.collection(FirestorePaths.ACCOUNTS)
                 .document(hostUid)
                 .collection(FirestorePaths.RIDES)
                 .document(tripId)
                 .collection(FirestorePaths.RIDE_TRANSCRIPTS)
                 .orderBy("timestamp", Query.Direction.ASCENDING)
+            launch {
+                val cached = runCatching { query.get(Source.CACHE).await() }
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to read transcript entries from cache first. tripId=$tripId", error)
+                    }
+                    .getOrNull()
+                if (cached != null) {
+                    val entries = cached.documents.mapNotNull { document ->
+                        val line = safeTranscriptLine(document, fallbackTripId = tripId) ?: return@mapNotNull null
+                        val statusRaw = document.getString("status")?.uppercase()
+                        val resolvedStatus = when (statusRaw) {
+                            TranscriptStatus.QUEUED.name -> TranscriptStatus.QUEUED
+                            TranscriptStatus.PROCESSING.name -> TranscriptStatus.PROCESSING
+                            TranscriptStatus.ERROR.name -> TranscriptStatus.ERROR
+                            TranscriptStatus.SUCCESS.name -> TranscriptStatus.SUCCESS
+                            else -> if (line.isPartial) TranscriptStatus.PROCESSING else TranscriptStatus.SUCCESS
+                        }
+                        val resolvedText = when {
+                            line.text.isNotBlank() -> line.text
+                            resolvedStatus == TranscriptStatus.QUEUED -> "Queued for transcription..."
+                            resolvedStatus == TranscriptStatus.PROCESSING -> "Processing audio..."
+                            resolvedStatus == TranscriptStatus.ERROR -> "Transcription error"
+                            else -> ""
+                        }
+                        val progressPercent = document.getLong("progressPercent")
+                            ?.toInt()
+                            ?.coerceIn(0, 100)
+                        TranscriptEntry(
+                            id = document.id,
+                            tripId = line.tripId,
+                            authorId = line.authorId,
+                            authorName = line.authorName.ifBlank { "Unknown" },
+                            text = resolvedText,
+                            timestamp = line.timestamp,
+                            status = resolvedStatus,
+                            errorMessage = document.getString("errorMessage")?.takeIf { it.isNotBlank() },
+                            audioFileName = document.getString("audioFileName")?.takeIf { it.isNotBlank() },
+                            progressPercent = progressPercent
+                        )
+                    }
+                    trySend(entries)
+                }
+            }
+            val listener = query
                 .addSnapshotListener { value, error ->
                     if (error != null) {
                         close(error)
@@ -323,6 +474,9 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                                 resolvedStatus == TranscriptStatus.ERROR -> "Transcription error"
                                 else -> ""
                             }
+                            val progressPercent = document.getLong("progressPercent")
+                                ?.toInt()
+                                ?.coerceIn(0, 100)
                             TranscriptEntry(
                                 id = document.id,
                                 tripId = line.tripId,
@@ -332,7 +486,8 @@ class TripRepository(private val tripDaoProvider: () -> TripDao) {
                                 timestamp = line.timestamp,
                                 status = resolvedStatus,
                                 errorMessage = document.getString("errorMessage")?.takeIf { it.isNotBlank() },
-                                audioFileName = document.getString("audioFileName")?.takeIf { it.isNotBlank() }
+                                audioFileName = document.getString("audioFileName")?.takeIf { it.isNotBlank() },
+                                progressPercent = progressPercent
                             )
                         }
                         trySend(entries)

@@ -196,7 +196,8 @@ fun ActiveTripScreen(
                         text = entry.text,
                         timestampMs = entry.timestampMs,
                         status = entry.status,
-                        errorMessage = entry.errorMessage
+                        errorMessage = entry.errorMessage,
+                        progressPercent = entry.progressPercent
                     )
                 },
                 emptyText = stringResource(R.string.transcription_waiting_speech),

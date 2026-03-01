@@ -82,6 +82,14 @@ class SpeechRecognizerHelper(
         val error: String? = null
     )
 
+    fun interface ChunkTranscriptionProgressListener {
+        fun onProgress(progressPercent: Int?)
+    }
+
+    private object NoOpChunkTranscriptionProgressListener : ChunkTranscriptionProgressListener {
+        override fun onProgress(progressPercent: Int?) = Unit
+    }
+
     interface SpeechRecognitionListener {
         fun onPartialResults(results: String)
         fun onFinalResults(results: String)
@@ -319,7 +327,8 @@ class SpeechRecognizerHelper(
     fun processAudio(data: ByteArray) {
         val result = transcribeChunkInternal(
             data = data,
-            requiresRealtimeSession = true
+            requiresRealtimeSession = true,
+            progressListener = NoOpChunkTranscriptionProgressListener
         )
         if (!result.error.isNullOrBlank()) {
             listener.onError(result.error)
@@ -332,15 +341,24 @@ class SpeechRecognizerHelper(
     }
 
     fun transcribeChunk(data: ByteArray): ChunkTranscriptionResult {
+        return transcribeChunk(data, NoOpChunkTranscriptionProgressListener)
+    }
+
+    fun transcribeChunk(
+        data: ByteArray,
+        progressListener: ChunkTranscriptionProgressListener
+    ): ChunkTranscriptionResult {
         return transcribeChunkInternal(
             data = data,
-            requiresRealtimeSession = false
+            requiresRealtimeSession = false,
+            progressListener = progressListener
         )
     }
 
     private fun transcribeChunkInternal(
         data: ByteArray,
-        requiresRealtimeSession: Boolean
+        requiresRealtimeSession: Boolean,
+        progressListener: ChunkTranscriptionProgressListener
     ): ChunkTranscriptionResult {
         if (requiresRealtimeSession && !isRealtimeListening) {
             return ChunkTranscriptionResult(error = "Speech recognizer helper is not listening.")
@@ -365,11 +383,11 @@ class SpeechRecognizerHelper(
 
         val shouldUseWhisper = selectedEngine == SttEngine.WHISPER && isUsingWhisper
         if (shouldUseWhisper) {
-            return processWhisperChunk(data)
+            return processWhisperChunk(data, progressListener)
         }
 
         if (selectedEngine == SttEngine.WHISPER_KIT) {
-            return processWhisperKitChunk(data)
+            return processWhisperKitChunk(data, progressListener)
         }
 
         if (selectedEngine == SttEngine.NATIVE && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -378,7 +396,7 @@ class SpeechRecognizerHelper(
             )
         }
 
-        return processNativeChunk(data)
+        return processNativeChunk(data, progressListener)
     }
 
     private fun checkAndInitWhisperKit() {
@@ -403,16 +421,27 @@ class SpeechRecognizerHelper(
         }
     }
 
-    private fun processWhisperKitChunk(data: ByteArray): ChunkTranscriptionResult {
+    private fun processWhisperKitChunk(
+        data: ByteArray,
+        progressListener: ChunkTranscriptionProgressListener
+    ): ChunkTranscriptionResult {
+        reportChunkProgress(progressListener, 5)
         // Ensure 16kHz conversion because AudioService sends 48kHz
         val sampleCount48k = data.size / 2
         val pcm48k = FloatArray(sampleCount48k)
+        val convertCheckpoint = (pcm48k.size / 8).coerceAtLeast(1)
         for (i in pcm48k.indices) {
             val sample = ((data[i * 2 + 1].toInt() shl 8) or (data[i * 2].toInt() and 0xFF)).toShort()
             val normalized = sample.toFloat() / 32768.0f
             pcm48k[i] = normalized
+            if (i % convertCheckpoint == 0) {
+                val progress = 5 + ((i + 1) * 25 / pcm48k.size.coerceAtLeast(1))
+                reportChunkProgress(progressListener, progress)
+            }
         }
+        reportChunkProgress(progressListener, 32)
         val pcm16k = downsampleToWhisperRate(pcm48k)
+        reportChunkProgress(progressListener, 40)
         
         // Convert back to ByteArray PCM 16bit 16kHz for WhisperKit if needed
         // Or if WhisperKit supports floats, use that. Our wrapper takes ByteArray.
@@ -424,12 +453,14 @@ class SpeechRecognizerHelper(
             buffer.putShort(shortSample)
         }
         val pcm16kBytes = buffer.array()
+        reportChunkProgress(progressListener, 48)
 
         val text = kotlinx.coroutines.runBlocking {
             kotlinx.coroutines.withTimeoutOrNull(TimeUnit.SECONDS.toMillis(WHISPER_KIT_CHUNK_TIMEOUT_SECONDS)) {
                 whisperKitWrapper?.transcribe(pcm16kBytes)
             }
         }
+        reportChunkProgress(progressListener, 95)
         if (text == null) {
             Log.e(TAG, "[STT_QUEUE] WhisperKit chunk timeout after ${WHISPER_KIT_CHUNK_TIMEOUT_SECONDS}s")
             return ChunkTranscriptionResult(
@@ -438,9 +469,11 @@ class SpeechRecognizerHelper(
         }
         
         if (!text.isNullOrBlank()) {
-             return ChunkTranscriptionResult(text = text)
+            reportChunkProgress(progressListener, 100)
+            return ChunkTranscriptionResult(text = text)
         }
         
+        reportChunkProgress(progressListener, 100)
         return ChunkTranscriptionResult()
     }
 
@@ -571,10 +604,15 @@ class SpeechRecognizerHelper(
         }
     }
 
-    private fun processWhisperChunk(data: ByteArray): ChunkTranscriptionResult {
+    private fun processWhisperChunk(
+        data: ByteArray,
+        progressListener: ChunkTranscriptionProgressListener
+    ): ChunkTranscriptionResult {
         val sampleCount48k = data.size / 2
+        reportChunkProgress(progressListener, 5)
         val pcm48k = FloatArray(sampleCount48k)
         var peak = 0f
+        val convertCheckpoint = (pcm48k.size / 8).coerceAtLeast(1)
         for (i in pcm48k.indices) {
             val sample = ((data[i * 2 + 1].toInt() shl 8) or (data[i * 2].toInt() and 0xFF)).toShort()
             val normalized = sample.toFloat() / 32768.0f
@@ -583,8 +621,13 @@ class SpeechRecognizerHelper(
             if (absSample > peak) {
                 peak = absSample
             }
+            if (i % convertCheckpoint == 0) {
+                val progress = 5 + ((i + 1) * 25 / pcm48k.size.coerceAtLeast(1))
+                reportChunkProgress(progressListener, progress)
+            }
         }
 
+        reportChunkProgress(progressListener, 35)
         val pcm16k = downsampleToWhisperRate(pcm48k)
         if (pcm16k.size < MIN_WHISPER_SAMPLES) {
             Log.d(
@@ -595,6 +638,7 @@ class SpeechRecognizerHelper(
             return ChunkTranscriptionResult()
         }
 
+        reportChunkProgress(progressListener, 45)
         whisperChunkCount++
         val startMs = System.currentTimeMillis()
         val result = synchronized(whisperLock) {
@@ -605,6 +649,7 @@ class SpeechRecognizerHelper(
             }
         }
         val elapsedMs = System.currentTimeMillis() - startMs
+        reportChunkProgress(progressListener, 95)
 
         if (result == null) {
             Log.d(TAG, "Skipping Whisper chunk because context is unavailable.")
@@ -637,10 +682,14 @@ class SpeechRecognizerHelper(
                 "samples16k=${pcm16k.size}, peak=${"%.3f".format(peak)}, elapsedMs=$elapsedMs, " +
                 "preview=${result.take(120)}"
         )
+        reportChunkProgress(progressListener, 100)
         return ChunkTranscriptionResult(text = result)
     }
 
-    private fun processNativeChunk(data: ByteArray): ChunkTranscriptionResult {
+    private fun processNativeChunk(
+        data: ByteArray,
+        progressListener: ChunkTranscriptionProgressListener
+    ): ChunkTranscriptionResult {
         val sampleCount = data.size / 2
         if (sampleCount < MIN_SYSTEM_SAMPLES) {
             Log.d(
@@ -654,7 +703,7 @@ class SpeechRecognizerHelper(
         systemChunkCount++
         val chunkId = systemChunkCount
         val startMs = System.currentTimeMillis()
-        val result = transcribeNativeChunk(data)
+        val result = transcribeNativeChunk(data, progressListener)
         val elapsedMs = System.currentTimeMillis() - startMs
 
         if (result.error != null) {
@@ -675,7 +724,11 @@ class SpeechRecognizerHelper(
         return ChunkTranscriptionResult(text = text)
     }
 
-    private fun transcribeNativeChunk(data: ByteArray): ChunkTranscriptionResult {
+    private fun transcribeNativeChunk(
+        data: ByteArray,
+        progressListener: ChunkTranscriptionProgressListener
+    ): ChunkTranscriptionResult {
+        reportChunkProgress(progressListener, 5)
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             return ChunkTranscriptionResult(error = "Speech recognition not available on this device.")
         }
@@ -717,6 +770,7 @@ class SpeechRecognizerHelper(
                     override fun onEndOfSpeech() {}
 
                     override fun onError(error: Int) {
+                        reportChunkProgress(progressListener, 100)
                         val errorMessage = mapSpeechRecognizerError(error)
                         if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                             val fallbackText = partialRef.get()?.trim().orEmpty()
@@ -732,6 +786,7 @@ class SpeechRecognizerHelper(
                     }
 
                     override fun onResults(results: Bundle?) {
+                        reportChunkProgress(progressListener, 100)
                         val text = results
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             ?.firstOrNull()
@@ -777,6 +832,7 @@ class SpeechRecognizerHelper(
         if (!startLatch.await(2, TimeUnit.SECONDS)) {
             return ChunkTranscriptionResult(error = "Native chunk recognizer setup timeout.")
         }
+        reportChunkProgress(progressListener, 10)
         Log.d(TAG, "[STT_QUEUE] Native recognizer setup completed in ${System.currentTimeMillis() - transcribeStartMs}ms")
 
         val writer = writePipe
@@ -791,11 +847,17 @@ class SpeechRecognizerHelper(
         val writeFuture = writeExecutor.submit<Boolean> {
             ParcelFileDescriptor.AutoCloseOutputStream(writer).use { output ->
                 var offset = 0
+                var lastProgress = 10
                 while (offset < data.size) {
                     val remaining = data.size - offset
                     val writeSize = minOf(remaining, SYSTEM_STT_PIPE_WRITE_CHUNK_BYTES)
                     output.write(data, offset, writeSize)
                     offset += writeSize
+                    val rawProgress = 10 + ((offset * 70) / data.size.coerceAtLeast(1))
+                    if (rawProgress >= lastProgress + 3 || rawProgress >= 80) {
+                        reportChunkProgress(progressListener, rawProgress.coerceAtMost(80))
+                        lastProgress = rawProgress
+                    }
                 }
                 output.flush()
             }
@@ -825,6 +887,7 @@ class SpeechRecognizerHelper(
             writeExecutor.shutdownNow()
         }
 
+        reportChunkProgress(progressListener, 85)
         Log.d(TAG, "[STT_QUEUE] Waiting native recognition result. timeout=${SYSTEM_STT_TIMEOUT_SECONDS}s")
         if (!resultLatch.await(SYSTEM_STT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             cleanupNativeRecognizer(recognizer, readPipe, writePipe)
@@ -836,6 +899,7 @@ class SpeechRecognizerHelper(
         }
 
         cleanupNativeRecognizer(recognizer, readPipe, writePipe)
+        reportChunkProgress(progressListener, 100)
         Log.d(
             TAG,
             "[STT_QUEUE] Native chunk transcription completed in ${System.currentTimeMillis() - transcribeStartMs}ms"
@@ -892,6 +956,13 @@ class SpeechRecognizerHelper(
             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Too many requests"
             else -> "Unknown recognizer error"
         }
+    }
+
+    private fun reportChunkProgress(
+        progressListener: ChunkTranscriptionProgressListener,
+        progressPercent: Int?
+    ) {
+        progressListener.onProgress(progressPercent?.coerceIn(0, 100))
     }
 
     private fun applyNativeLanguage(intent: Intent) {

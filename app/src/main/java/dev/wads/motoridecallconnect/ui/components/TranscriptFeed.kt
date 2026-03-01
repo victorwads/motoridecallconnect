@@ -52,7 +52,8 @@ data class TranscriptFeedItem(
     val timestampMs: Long,
     val status: TranscriptStatus,
     val errorMessage: String? = null,
-    val audioFileName: String? = null
+    val audioFileName: String? = null,
+    val progressPercent: Int? = null
 )
 
 @Composable
@@ -164,10 +165,22 @@ private fun TranscriptFeedLine(
                 )
                 when (item.status) {
                     TranscriptStatus.PROCESSING -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 2.dp
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp
+                            )
+                            item.progressPercent?.let { progress ->
+                                Text(
+                                    text = "${progress.coerceIn(0, 100)}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     TranscriptStatus.QUEUED -> {
                         Icon(

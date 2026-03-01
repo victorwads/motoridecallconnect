@@ -19,7 +19,8 @@ data class QueuedTranscriptionChunk(
     val status: TranscriptionChunkStatus,
     val attempts: Int,
     val audioFilePath: String,
-    val failureReason: String? = null
+    val failureReason: String? = null,
+    val progressPercent: Int? = null
 )
 
 data class TranscriptionQueueSnapshot(
@@ -54,6 +55,8 @@ interface TranscriptionChunkQueue {
     fun markFailed(chunkId: String, reason: String)
 
     fun markRetry(chunkId: String)
+
+    fun updateProgress(chunkId: String, progressPercent: Int?)
 
     /**
      * Resets all PROCESSING and FAILED items back to PENDING.

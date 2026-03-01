@@ -1,6 +1,7 @@
 package dev.wads.motoridecallconnect.data.repository
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import dev.wads.motoridecallconnect.data.model.UserProfile
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
 import kotlinx.coroutines.tasks.await
@@ -15,10 +16,16 @@ class UserRepository private constructor() {
         profileCache[uid]?.let { return it }
 
         return try {
-            val snapshot = firestore.collection(FirestorePaths.ACCOUNTS_PUBLIC_INFO)
+            val docRef = firestore.collection(FirestorePaths.ACCOUNTS_PUBLIC_INFO)
                 .document(uid)
-                .get()
-                .await()
+            val cachedSnapshot = runCatching {
+                docRef.get(Source.CACHE).await()
+            }.getOrNull()
+            val snapshot = if (cachedSnapshot != null && cachedSnapshot.exists()) {
+                cachedSnapshot
+            } else {
+                docRef.get().await()
+            }
             val profile = snapshot.toObject(UserProfile::class.java)
             if (profile != null) {
                 profileCache[uid] = profile

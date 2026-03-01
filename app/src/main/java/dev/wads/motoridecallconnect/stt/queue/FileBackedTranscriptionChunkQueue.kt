@@ -27,6 +27,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
         private const val KEY_ATTEMPTS = "attempts"
         private const val KEY_AUDIO_PATH = "audioFilePath"
         private const val KEY_FAILURE_REASON = "failureReason"
+        private const val KEY_PROGRESS_PERCENT = "progressPercent"
     }
 
     private val queueDir: File = File(context.filesDir, QUEUE_DIR_NAME).apply {
@@ -87,7 +88,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                     status = TranscriptionChunkStatus.PENDING,
                     attempts = 0,
                     audioFilePath = audioFile.absolutePath,
-                    failureReason = null
+                    failureReason = null,
+                    progressPercent = null
                 )
                 writeMetadata(metaFile, queued)
                 items.add(queued)
@@ -113,7 +115,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             val updated = current.copy(
                 status = TranscriptionChunkStatus.PROCESSING,
                 attempts = current.attempts + 1,
-                failureReason = null
+                failureReason = null,
+                progressPercent = null
             )
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
@@ -151,7 +154,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             val current = items[index]
             val updated = current.copy(
                 status = TranscriptionChunkStatus.SUCCESS,
-                failureReason = null
+                failureReason = null,
+                progressPercent = null
             )
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
@@ -171,7 +175,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             val current = items[index]
             val updated = current.copy(
                 status = TranscriptionChunkStatus.FAILED,
-                failureReason = reason.ifBlank { "Unknown STT failure" }
+                failureReason = reason.ifBlank { "Unknown STT failure" },
+                progressPercent = null
             )
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
@@ -192,11 +197,32 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
             val updated = current.copy(
                 status = TranscriptionChunkStatus.PENDING,
                 failureReason = null,
-                attempts = 0
+                attempts = 0,
+                progressPercent = null
             ) 
             items[index] = updated
             writeMetadata(metaFileFor(updated.id), updated)
             Log.d(TAG, "markRetry: chunk=$chunkId -> PENDING, audio at ${updated.audioFilePath}")
+        }
+    }
+
+    override fun updateProgress(chunkId: String, progressPercent: Int?) {
+        synchronized(lock) {
+            val index = items.indexOfFirst { it.id == chunkId }
+            if (index < 0) {
+                return
+            }
+            val current = items[index]
+            if (current.status != TranscriptionChunkStatus.PROCESSING) {
+                return
+            }
+            val normalized = progressPercent?.coerceIn(0, 100)
+            if (current.progressPercent == normalized) {
+                return
+            }
+            val updated = current.copy(progressPercent = normalized)
+            items[index] = updated
+            writeMetadata(metaFileFor(updated.id), updated)
         }
     }
 
@@ -210,7 +236,8 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                     val updated = item.copy(
                         status = TranscriptionChunkStatus.PENDING,
                         failureReason = null,
-                        attempts = 0
+                        attempts = 0,
+                        progressPercent = null
                     )
                     items[index] = updated
                     writeMetadata(metaFileFor(updated.id), updated)
@@ -268,7 +295,10 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 }
 
                 val normalized = if (parsed.status == TranscriptionChunkStatus.PROCESSING) {
-                    parsed.copy(status = TranscriptionChunkStatus.PENDING)
+                    parsed.copy(
+                        status = TranscriptionChunkStatus.PENDING,
+                        progressPercent = null
+                    )
                 } else {
                     parsed
                 }
@@ -306,7 +336,12 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 .getOrElse { TranscriptionChunkStatus.PENDING },
             attempts = json.optInt(KEY_ATTEMPTS, 0),
             audioFilePath = json.getString(KEY_AUDIO_PATH),
-            failureReason = json.optString(KEY_FAILURE_REASON).takeIf { it.isNotBlank() }
+            failureReason = json.optString(KEY_FAILURE_REASON).takeIf { it.isNotBlank() },
+            progressPercent = when {
+                json.has(KEY_PROGRESS_PERCENT) && !json.isNull(KEY_PROGRESS_PERCENT) ->
+                    json.optInt(KEY_PROGRESS_PERCENT).coerceIn(0, 100)
+                else -> null
+            }
         )
     }
 
@@ -325,6 +360,7 @@ class FileBackedTranscriptionChunkQueue(context: Context) : TranscriptionChunkQu
                 put(KEY_ATTEMPTS, item.attempts)
                 put(KEY_AUDIO_PATH, item.audioFilePath)
                 put(KEY_FAILURE_REASON, item.failureReason)
+                put(KEY_PROGRESS_PERCENT, item.progressPercent)
             }
             file.writeText(json.toString(), Charsets.UTF_8)
         } catch (error: IOException) {

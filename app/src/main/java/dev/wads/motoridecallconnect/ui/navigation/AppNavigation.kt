@@ -1,5 +1,6 @@
 package dev.wads.motoridecallconnect.ui.navigation
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +47,7 @@ import dev.wads.motoridecallconnect.ui.onboarding.OnboardingScreen
 import dev.wads.motoridecallconnect.ui.pairing.PairingScreen
 import dev.wads.motoridecallconnect.ui.social.SocialScreen
 import dev.wads.motoridecallconnect.ui.settings.SettingsScreen
+import dev.wads.motoridecallconnect.StorageManagementActivity
 
 @Composable
 fun AppNavigation(
@@ -202,6 +204,11 @@ fun AppNavigation(
                     onPresenceUpdateIntervalChange = { settingsViewModel.onPresenceUpdateIntervalChange(it) },
                     onNavigateBack = { navController.popBackStack() },
                     onTestAudio = { showAudioTest = true },
+                    onOpenStorageManagement = {
+                        context.startActivity(
+                            Intent(context, StorageManagementActivity::class.java)
+                        )
+                    },
                     onLogout = {
                         FirebaseAuth.getInstance().signOut()
                         coroutineScope.launch {

@@ -44,7 +44,8 @@ data class TranscriptQueueItemUi(
     val id: String,
     val timestampMs: Long,
     val status: TranscriptQueueItemStatus,
-    val failureReason: String? = null
+    val failureReason: String? = null,
+    val progressPercent: Int? = null
 )
 
 data class TranscriptEntryUi(
@@ -54,7 +55,8 @@ data class TranscriptEntryUi(
     val text: String,
     val timestampMs: Long,
     val status: TranscriptStatus = TranscriptStatus.SUCCESS,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val progressPercent: Int? = null
 ) {
     val isPartial: Boolean
         get() = status == TranscriptStatus.PROCESSING || status == TranscriptStatus.QUEUED
@@ -162,7 +164,8 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                                 text = entry.text,
                                 timestampMs = entry.timestamp,
                                 status = entry.status,
-                                errorMessage = entry.errorMessage
+                                errorMessage = entry.errorMessage,
+                                progressPercent = entry.progressPercent
                             )
                         }
                         val localPartial = state.transcriptEntries.lastOrNull()
@@ -337,7 +340,8 @@ class ActiveTripViewModel(private val repository: TripRepository) : ViewModel() 
                         id = queued.id,
                         timestampMs = queued.createdAtMs,
                         status = mapQueueStatus(queued.status),
-                        failureReason = queued.failureReason
+                        failureReason = queued.failureReason,
+                        progressPercent = queued.progressPercent
                     )
                 },
                 transcriptQueuePendingCount = pendingCount,

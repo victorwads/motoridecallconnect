@@ -3,6 +3,7 @@ package dev.wads.motoridecallconnect.data.repository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import dev.wads.motoridecallconnect.data.model.FriendRequest
 import dev.wads.motoridecallconnect.data.model.UserProfile
 import dev.wads.motoridecallconnect.data.remote.FirestorePaths
@@ -197,11 +198,12 @@ class SocialRepository {
 
     suspend fun getFriendsOnce(): List<UserProfile> {
         val uid = currentUserId ?: return emptyList()
-        val snapshot = firestore.collection(FirestorePaths.ACCOUNTS)
+        val query = firestore.collection(FirestorePaths.ACCOUNTS)
             .document(uid)
             .collection(FirestorePaths.FRIENDS)
-            .get()
-            .await()
+        val snapshot = runCatching { query.get(Source.CACHE).await() }
+            .getOrNull()
+            ?: query.get().await()
 
         return snapshot.documents
             .map { doc -> doc.getString("uid") ?: doc.id }

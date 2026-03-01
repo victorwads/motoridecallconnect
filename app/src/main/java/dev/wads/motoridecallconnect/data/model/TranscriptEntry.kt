@@ -16,5 +16,6 @@ data class TranscriptEntry(
     val timestamp: Long,
     val status: TranscriptStatus,
     val errorMessage: String? = null,
-    val audioFileName: String? = null
+    val audioFileName: String? = null,
+    val progressPercent: Int? = null
 )

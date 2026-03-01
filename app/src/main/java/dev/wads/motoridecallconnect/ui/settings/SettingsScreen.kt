@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -94,6 +95,7 @@ fun SettingsScreen(
     onPresenceUpdateIntervalChange: (Int) -> Unit,
     onNavigateBack: () -> Unit,
     onTestAudio: () -> Unit,
+    onOpenStorageManagement: () -> Unit,
     onLogout: () -> Unit
 ) {
     val user = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
@@ -567,6 +569,31 @@ fun SettingsScreen(
                 }
             }
         }
+
+        StatusCard(
+            title = stringResource(R.string.storage_section_title),
+            icon = Icons.Default.Storage
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenStorageManagement)
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.storage_manage_action),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
     }
 }
 
@@ -601,6 +628,7 @@ private fun SettingsScreenPreview() {
                 onAutoConnectNearbyFriendsChange = {},
                 onPresenceUpdateIntervalChange = {},
                 onTestAudio = {},
+                onOpenStorageManagement = {},
                 onNavigateBack = {},
                 onLogout = {}
             )

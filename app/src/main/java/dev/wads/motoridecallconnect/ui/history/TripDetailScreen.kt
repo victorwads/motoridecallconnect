@@ -136,7 +136,8 @@ fun TripDetailScreen(
                                 timestampMs = entry.timestamp,
                                 status = entry.status,
                                 errorMessage = entry.errorMessage,
-                                audioFileName = entry.audioFileName
+                                audioFileName = entry.audioFileName,
+                                progressPercent = entry.progressPercent
                             )
                         },
                         emptyText = stringResource(R.string.no_transcript_records),
