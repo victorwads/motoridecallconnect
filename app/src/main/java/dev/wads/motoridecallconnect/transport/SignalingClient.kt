@@ -254,13 +254,35 @@ class SignalingClient(private val listener: SignalingListener) {
                 }
                 currentWriter.println(message)
                 if (currentWriter.checkError()) {
-                    throw IllegalStateException("Failed to write signaling message")
+                    // The writer is in a permanent error state.  Try to rebuild
+                    // it from the live socket before giving up.
+                    val socket = clientSocket
+                    if (socket != null && !socket.isClosed && socket.isConnected) {
+                        try {
+                            val freshWriter = PrintWriter(socket.getOutputStream(), true)
+                            writer = freshWriter
+                            freshWriter.println(message)
+                            if (!freshWriter.checkError()) {
+                                Log.w(TAG, "Writer recovered after transient error.")
+                                return
+                            }
+                        } catch (rebuild: Exception) {
+                            Log.w(TAG, "Failed to rebuild writer", rebuild)
+                        }
+                    }
+                    Log.e(TAG, "Failed to write signaling message (writer in error state)")
+                    listener.onSignalingError(
+                        IllegalStateException("Failed to write signaling message")
+                    )
+                    // Do NOT call close() here – the reader loop will detect
+                    // a dead socket on its own and trigger onPeerDisconnected.
                 }
             }
         } catch (e: Exception) {
             if (!isClosed) {
                 Log.e(TAG, "Error sending signaling message", e)
                 listener.onSignalingError(e)
+                // Only close on unrecoverable exceptions (e.g. socket already closed).
                 close()
             }
         }

@@ -806,6 +806,9 @@ class AudioService : LifecycleService(), AudioCapturer.AudioCapturerListener, Sp
         if (firestoreSignalingClient.hasActiveSession()) {
             activeSignalingTransport = ConnectionTransportMode.INTERNET
         }
+        // Configure WebRTC for the current transport BEFORE creating offer/answer
+        // so ICE candidates are generated with the correct settings.
+        webRtcClient.configureForTransport(activeSignalingTransport)
         sendSignalingMessage("NAME:${buildPeerInfoPayload()}")
         if (isInitiator) {
             val localControlChannel = webRtcClient.createDataChannel(CONTROL_CHANNEL_LABEL)

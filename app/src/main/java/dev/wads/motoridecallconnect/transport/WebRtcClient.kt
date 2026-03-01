@@ -2,6 +2,7 @@ package dev.wads.motoridecallconnect.transport
 
 import android.content.Context
 import android.util.Log
+import dev.wads.motoridecallconnect.data.model.ConnectionTransportMode
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DefaultVideoDecoderFactory
@@ -39,7 +40,16 @@ class WebRtcClient(
                 .setFieldTrials("WebRTC-MDNS/Disabled/")
                 .createInitializationOptions()
         )
-        val options = PeerConnectionFactory.Options()
+        val options = PeerConnectionFactory.Options().apply {
+            // Disable Android's Java-level NetworkMonitor so that WebRTC falls
+            // back to native getifaddrs(), which detects ALL network interfaces
+            // including Samsung's virtual swlan0 (used for WiFi hotspot / tethering).
+            // The Java NetworkMonitor only queries ConnectivityManager, which does
+            // not register the tethering AP interface as a Network, causing WebRTC
+            // to miss the hotspot IP and generate ICE candidates for the wrong
+            // interface (e.g. epdg / VoWiFi).
+            disableNetworkMonitor = true
+        }
         
         val audioDeviceModule = JavaAudioDeviceModule.builder(context)
             .setUseHardwareAcousticEchoCanceler(true)
@@ -68,6 +78,40 @@ class WebRtcClient(
     }
 
     private var peerConnection: PeerConnection? = null
+
+    /**
+     * Reconfigure the ICE servers and PeerConnection for the given transport mode.
+     *
+     * For [ConnectionTransportMode.LOCAL_NETWORK] and [ConnectionTransportMode.WIFI_DIRECT],
+     * STUN/TURN servers are removed so that ICE uses only host candidates (local IPs).
+     * This avoids timeouts when the network has no internet access (e.g. a mobile hotspot)
+     * and ensures WebRTC traffic stays on the local network.
+     *
+     * For [ConnectionTransportMode.INTERNET], the public STUN server is restored so
+     * reflexive candidates can be gathered for NAT traversal.
+     *
+     * The existing PeerConnection is closed and a fresh one is created with the
+     * updated configuration.
+     */
+    fun configureForTransport(mode: ConnectionTransportMode) {
+        val iceServers: List<PeerConnection.IceServer> = when (mode) {
+            ConnectionTransportMode.LOCAL_NETWORK,
+            ConnectionTransportMode.WIFI_DIRECT -> {
+                Log.i(TAG, "Configuring for local transport ($mode): no STUN servers, host candidates only.")
+                emptyList()
+            }
+            ConnectionTransportMode.INTERNET -> {
+                Log.i(TAG, "Configuring for INTERNET transport: using STUN server.")
+                listOf(
+                    PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+                )
+            }
+        }
+        rtcConfig.iceServers = iceServers
+        // Recreate the PeerConnection with the updated configuration.
+        peerConnection?.close()
+        createPeerConnection()
+    }
 
     private val audioConstraints = MediaConstraints().apply {
         mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
